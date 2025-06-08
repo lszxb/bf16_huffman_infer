@@ -9,7 +9,7 @@ from .huffman import LUTHuffmanEncoder
 
 from .utils import get_block_size_n, split_bf16
 
-from .ops import gemv_bf16_huffman, gemv_fp32, gemv_bf16, gemv_bf16_split, huffman_decode, huffman_encode
+from .ops import gemv_bf16_huffman, gemv_bf16, huffman_decode, huffman_encode
 
 OP_PER_LANE = 2
 
@@ -25,17 +25,14 @@ def mv(A: Tensor, X: Tensor) -> Tensor:
     assert A.dtype == X.dtype
     assert A.device.type == X.device.type == 'cuda'
     assert A.device == X.device
+    assert A.dtype == torch.bfloat16
     
     A = A.contiguous()
     X = X.contiguous()
     
     Y = torch.empty((M,), dtype=A.dtype, device=A.device)
-    if A.dtype == torch.float32:
-        gemv_fp32(A, X, Y)
-    elif A.dtype == torch.bfloat16:
-        gemv_bf16(A, X, Y)
-    else:
-        assert 0
+    gemv_bf16(A, X, Y)
+    
     return Y
 
 

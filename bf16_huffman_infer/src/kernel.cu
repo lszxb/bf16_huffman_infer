@@ -503,7 +503,7 @@ void huffman_encode(
     );
 }
 
-TORCH_LIBRARY_IMPL(gemv, CUDA, m) {
+TORCH_LIBRARY_IMPL(bf16_huffman_infer, CUDA, m) {
     m.impl("gemv_bf16", &gemv_bf16);
     m.impl("gemv_bf16_huffman", &gemv_bf16_huffman);
     m.impl("huffman_encode", &huffman_encode);
