@@ -443,6 +443,7 @@ __global__ void huffman_decode_kernel(
 
             // N /= split_k;
             A_rem += M * N * 2 / sizeof(A_rem[0]);
+            Y += M * N * 2 / (sizeof(Y[0]) / sizeof(nv_bfloat16));
             offsets += offsets_stride;
         }
     }
