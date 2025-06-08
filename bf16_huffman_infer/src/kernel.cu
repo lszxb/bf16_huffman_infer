@@ -3,7 +3,7 @@
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 
-#define OP_PER_LANE 2
+#define OP_PER_LANE 1
 
 namespace bf16_huffman_infer {
 

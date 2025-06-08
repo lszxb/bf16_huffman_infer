@@ -11,7 +11,7 @@ from .utils import get_block_size_n, split_bf16
 
 from .ops import gemv_bf16_huffman, gemv_bf16, huffman_decode, huffman_encode
 
-OP_PER_LANE = 2
+OP_PER_LANE = 1
 
 __all__ = ["linear", "linear_huffman", "HuffmanReferenceKernelMode", "HuffmanWeight", "HuffmanLinear"]
 
