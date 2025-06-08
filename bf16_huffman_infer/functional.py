@@ -139,6 +139,8 @@ class HuffmanWeight(nn.Module):
             self.rem, self.exp, weight,
             self.offsets, self.LUT1, self.LUT2, self.LUT3, self.LUT4, self.code_lengths
         )
+        weight.transpose_(0, 1)
+        weight = weight.flatten(1, 2)
         return weight
     
     @staticmethod

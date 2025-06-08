@@ -43,4 +43,5 @@ def print_stats(ori: Tensor, new: nn.Module):
     print(f'ori size = {ori_size / 1024 ** 2:.2f}MiB')
     print(f'new size = {new_size / 1024 ** 2:.2f}MiB')
     print(f'compression ratio = {new_size / ori_size:.2%}')
+    print(f'bits = {new_size / ori_size * 16:.2f}')
 

@@ -357,69 +357,93 @@ __global__ void huffman_decode_kernel(
     const uint32_t* offsets,
     const uint8_t* LUT1, const uint8_t* LUT2, const uint8_t* LUT3, const uint8_t* LUT4,
     const uint8_t* code_lengths,
-    int M, int N
+    int M, int N, int split_k
 ) {
-    __shared__ uint8_t sh_LUT1[256];
-    ((uint32_t*)sh_LUT1)[threadIdx.x] = ((const uint32_t*)LUT1)[threadIdx.x];
+    __shared__ LUT sh_LUT;
+
+    ((uint64_t*)sh_LUT.LUT1)[threadIdx.x] = ((const uint64_t*)LUT1)[threadIdx.x];
+    ((uint64_t*)sh_LUT.LUT2)[threadIdx.x] = ((const uint64_t*)LUT2)[threadIdx.x];
+    ((uint64_t*)sh_LUT.LUT3)[threadIdx.x] = ((const uint64_t*)LUT3)[threadIdx.x];
+    ((uint64_t*)sh_LUT.LUT4)[threadIdx.x] = ((const uint64_t*)LUT4)[threadIdx.x];
+    ((uint64_t*)sh_LUT.code_lengths)[threadIdx.x] = ((const uint64_t*)code_lengths)[threadIdx.x];
+
     __syncthreads();
 
     N /= 2;
 
-    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    int thread_id = ((blockIdx.x * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x) * 2;
 
     int warp_group_size = warpSize * 2;
 
     int warp_group_id = thread_id / warp_group_size;
     int lane_id = thread_id % warp_group_size;
 
-    int stride = N;
+    if (warp_group_id * OP_PER_LANE > M) {
+        return; // no work to do
+    }
 
-    const int boundry_offset = max((warp_group_id + 1) * OP_PER_LANE - M, 0);
+    for (int k = 0; k < split_k; k++) {
+        int stride = N;
 
-    const uchar2 *par = &A_rem[(warp_group_id * OP_PER_LANE - boundry_offset) * stride + lane_id];
-    const uint32_t *pae = &A_exp[offsets[warp_group_id] + lane_id];
+        const uchar4 *par = (const uchar4 *)&A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
+        const uint32_t *pae = &A_exp[offsets[warp_group_id] + lane_id];
+        const uint32_t *pae2 = &A_exp[offsets[warp_group_id] + lane_id + 1];
 
-    uchar2 ar[OP_PER_LANE];
-    uchar2 ae[OP_PER_LANE];
+        uchar4 ar[OP_PER_LANE];
+        uchar4 ae[OP_PER_LANE];
 
-    decoder dec;
-
-    __syncwarp();
-
-    for (int count = 0; count < (N / warp_group_size); count += 1) {
-        const uchar2 *npar = par;
-        #pragma unroll
-        for (int i = 0; i < OP_PER_LANE; i++) {
-            ar[i] = *npar;
-            npar += stride;
-        }
-        par += warp_group_size;
-
-        #pragma unroll
-        for (int i = 0; i < OP_PER_LANE; i++) {
-            ae[i].x = dec.decode_symbol(
-                pae, warp_group_size,
-                sh_LUT1, LUT2, LUT3, LUT4,
-                code_lengths
-            );
-            ae[i].y = dec.decode_symbol(
-                pae, warp_group_size,
-                sh_LUT1, LUT2, LUT3, LUT4,
-                code_lengths
-            );
-        }
+        decoder dec;
+        decoder dec2;
 
         __syncwarp();
 
-        #pragma unroll
-        for (int i = 0; i < OP_PER_LANE; i++) {
-            uint32_t rem = (uint32_t(ar[i].y) << 16) | ar[i].x;
-            uint32_t exp = (uint32_t(ae[i].y) << 16) | ae[i].x;
-            union {
-                uint32_t _bits;
-                nv_bfloat162 u;
-            } bf16{((rem << 8) & 0x80008000) | (rem & 0x007F007F) | (exp << 7)};
-            Y[(warp_group_id * OP_PER_LANE - boundry_offset + i) * N + count * warp_group_size + lane_id] = bf16.u;
+        for (int count = 0, n_iter = N / warp_group_size; count < n_iter; count += 1) {
+            const uchar4 *npar = par;
+            #pragma unroll
+            for (int i = 0; i < OP_PER_LANE; i++) {
+                ar[i] = *npar;
+                npar += stride / 2;
+            }
+            par += warpSize;
+
+            #pragma unroll
+            for (int i = 0; i < OP_PER_LANE; i++) {
+                ae[i].x = dec.decode_symbol2(pae, warp_group_size, &sh_LUT);
+                ae[i].z = dec2.decode_symbol2(pae2, warp_group_size, &sh_LUT);
+                ae[i].y = dec.decode_symbol2(pae, warp_group_size, &sh_LUT);
+                ae[i].w = dec2.decode_symbol2(pae2, warp_group_size, &sh_LUT);
+            }
+
+            // __syncwarp();
+
+            #pragma unroll
+            for (int i = 0; i < OP_PER_LANE; i++) {
+                uint32_t rem0 = (uint32_t(ar[i].y) << 16) | ar[i].x;
+                uint32_t rem1 = (uint32_t(ar[i].w) << 16) | ar[i].z;
+                uint32_t exp0 = (uint32_t(ae[i].y) << 16) | ae[i].x;
+                uint32_t exp1 = (uint32_t(ae[i].w) << 16) | ae[i].z;
+                union {
+                    uint32_t _bits;
+                    nv_bfloat162 u;
+                } bf160{((rem0 << 8) & 0x80008000) | (rem0 & 0x007F007F) | (exp0 << 7)};
+                union {
+                    uint32_t _bits;
+                    nv_bfloat162 u;
+                } bf161{((rem1 << 8) & 0x80008000) | (rem1 & 0x007F007F) | (exp1 << 7)};
+                Y[(warp_group_id * OP_PER_LANE + i) * N + count * warp_group_size + lane_id] = bf160.u;
+                Y[(warp_group_id * OP_PER_LANE + i) * N + count * warp_group_size + lane_id + 1] = bf161.u;
+            }
+        }
+        
+        {
+            // handle split k
+            int num_warp_groups = blockDim.y * gridDim.x;
+            int offsets_stride = num_warp_groups;
+            // printf("%d\n", offsets_stride);
+
+            // N /= split_k;
+            A_rem += M * N * 2 / sizeof(A_rem[0]);
+            offsets += offsets_stride;
         }
     }
 }
@@ -436,11 +460,13 @@ void huffman_decode(
     const torch::Tensor &LUT4,
     const torch::Tensor &code_lengths
 ) {
-    int M = A_rem.size(0);
-    int N = A_rem.size(1);
+    int split_k = A_rem.size(0);
+    int M = A_rem.size(1);
+    int N = A_rem.size(2);
 
-    int block_size = 64;
-    int grid_size = ceil_div(M, OP_PER_LANE);
+    int num_warps_per_block = 4; // TODO: If 3 will crash randomly
+    auto block_size = dim3(32, num_warps_per_block, 1);
+    auto grid_size = dim3(ceil_div(M, OP_PER_LANE * num_warps_per_block), 1, 1);
 
     auto stream = c10::cuda::getCurrentCUDAStream(A_rem.device().index()).stream();
 
@@ -454,7 +480,7 @@ void huffman_decode(
         static_cast<const uint8_t*>(LUT3.const_data_ptr()),
         static_cast<const uint8_t*>(LUT4.const_data_ptr()),
         static_cast<const uint8_t*>(code_lengths.const_data_ptr()),
-        M, N
+        M, N, split_k
     );
 }
 
