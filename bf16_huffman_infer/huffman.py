@@ -3,7 +3,6 @@ import heapq
 from typing import Dict, List, Tuple, Union
 import torch
 from collections import defaultdict
-from numba import jit
 
 from tqdm import tqdm
 
@@ -279,16 +278,6 @@ class LUTHuffmanEncoder:
             else:
                 for i in range(2 ** (32 - code_len)):
                     self.LUT4[byte4 + i * 2 ** (code_len - 24)] = symbol
-    
-    @staticmethod
-    @jit(nopython=True)
-    def encode_to_bitstream_jit(data: np.ndarray, codes: np.ndarray) -> str:
-        """编码数据为位流"""
-        bit_string = ""
-        for byte_val in data:
-            bit_string += codes[byte_val]
-        
-        return bit_string
     
     @staticmethod
     def encode_to_bitstream(data: np.ndarray, codes: Dict[int, str], progress=True) -> str:
