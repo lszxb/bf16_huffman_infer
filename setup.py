@@ -1,7 +1,19 @@
+import platform
+import os
+import sys
 from setuptools import setup, find_packages
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 pkg_name = 'bf16_huffman_infer'
+
+
+library_dirs = []
+
+if platform.system() == 'Windows':
+    cuda_home = os.getenv('CUDA_HOME', None)
+    if cuda_home is None:
+        cuda_home = os.path.join(os.path.dirname(sys.executable), 'Library')
+    library_dirs.append(os.path.join(cuda_home, 'lib'))
 
 
 setup(
@@ -22,9 +34,7 @@ setup(
                 'nvcc': ['-std=c++17', '-arch=sm_75', '-O3', '--use_fast_math', 
                          '-lineinfo', '--ptxas-options=-v --warn-on-spills'],
             },
-            library_dirs=[
-                r'C:\Users\lszxb\miniforge3\envs\ml\Library\lib',
-            ],
+            library_dirs=library_dirs,
             py_limited_api=True,
         )
     ],
