@@ -13,7 +13,15 @@ from .ops import gemv_bf16_huffman, gemv_bf16, huffman_decode, huffman_encode
 
 OP_PER_LANE = 1
 
-__all__ = ["linear", "linear_huffman", "HuffmanReferenceKernelMode", "HuffmanWeight", "HuffmanLinear"]
+__all__ = [
+    "linear",
+    "linear_huffman",
+    "HuffmanReferenceKernelMode",
+    "HuffmanWeight",
+    "HuffmanLinear",
+    "convert_all_linear",
+    "convert",
+]
 
 def mv(A: Tensor, X: Tensor) -> Tensor:
     M, N = A.shape
