@@ -197,8 +197,6 @@ gemv_bf16_huffman_kernel(
 
     __syncthreads();
 
-    N /= 2;
-
     int thread_id = ((blockIdx.x * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x) * 2;
 
     int warp_group_size = warpSize * 2;
@@ -217,7 +215,7 @@ gemv_bf16_huffman_kernel(
     }
 
     for (int k = 0; k < split_k; k++) {
-        int stride = N;
+        int stride = N / 2;
 
         const uchar4 *par = (const uchar4 *)&A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
         const uint32_t *pae = &A_exp[offsets[warp_group_id] + lane_id];
@@ -234,7 +232,7 @@ gemv_bf16_huffman_kernel(
 
         __syncwarp();
 
-        for (int count = 0, n_iter = N / warp_group_size; count < n_iter; count += 1) {
+        for (int count = 0, n_iter = N / (2 * warp_group_size); count < n_iter; count += 1) {
             x = *px;
             const uchar4 *npar = par;
             #pragma unroll
@@ -285,8 +283,8 @@ gemv_bf16_huffman_kernel(
             // printf("%d\n", offsets_stride);
 
             // N /= split_k;
-            A_rem += M * N * 2 / sizeof(A_rem[0]);
-            X += N * 2 / (sizeof(X[0]) / sizeof(nv_bfloat16));
+            A_rem += M * N / sizeof(A_rem[0]);
+            X += N / (sizeof(X[0]) / sizeof(nv_bfloat16));
             offsets += offsets_stride;
         }
     }
@@ -369,8 +367,6 @@ __global__ void huffman_decode_kernel(
 
     __syncthreads();
 
-    N /= 2;
-
     int thread_id = ((blockIdx.x * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x) * 2;
 
     int warp_group_size = warpSize * 2;
@@ -383,7 +379,7 @@ __global__ void huffman_decode_kernel(
     }
 
     for (int k = 0; k < split_k; k++) {
-        int stride = N;
+        int stride = N / 2;
 
         const uchar4 *par = (const uchar4 *)&A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
         const uint32_t *pae = &A_exp[offsets[warp_group_id] + lane_id];
@@ -397,7 +393,7 @@ __global__ void huffman_decode_kernel(
 
         __syncwarp();
 
-        for (int count = 0, n_iter = N / warp_group_size; count < n_iter; count += 1) {
+        for (int count = 0, n_iter = N / (2 * warp_group_size); count < n_iter; count += 1) {
             const uchar4 *npar = par;
             #pragma unroll
             for (int i = 0; i < OP_PER_LANE; i++) {
@@ -430,8 +426,8 @@ __global__ void huffman_decode_kernel(
                     uint32_t _bits;
                     nv_bfloat162 u;
                 } bf161{((rem1 << 8) & 0x80008000) | (rem1 & 0x007F007F) | (exp1 << 7)};
-                Y[(warp_group_id * OP_PER_LANE + i) * N + count * warp_group_size + lane_id] = bf160.u;
-                Y[(warp_group_id * OP_PER_LANE + i) * N + count * warp_group_size + lane_id + 1] = bf161.u;
+                Y[(warp_group_id * OP_PER_LANE + i) * N / 2 + count * warp_group_size + lane_id] = bf160.u;
+                Y[(warp_group_id * OP_PER_LANE + i) * N / 2 + count * warp_group_size + lane_id + 1] = bf161.u;
             }
         }
         
@@ -442,8 +438,8 @@ __global__ void huffman_decode_kernel(
             // printf("%d\n", offsets_stride);
 
             // N /= split_k;
-            A_rem += M * N * 2 / sizeof(A_rem[0]);
-            Y += M * N * 2 / (sizeof(Y[0]) / sizeof(nv_bfloat16));
+            A_rem += M * N / sizeof(A_rem[0]);
+            Y += M * N / (sizeof(Y[0]) / sizeof(nv_bfloat16));
             offsets += offsets_stride;
         }
     }
