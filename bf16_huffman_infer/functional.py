@@ -61,7 +61,7 @@ def mv_huffman(
     
     assert M % 128 == 0
     assert N % 128 == 0
-    assert len(X.shape) == 2
+    assert len(X.shape) == 3
     assert X.size(-1) == N
     assert X.dtype == torch.bfloat16
     assert A_rem.device.type == A_exp.device.type == X.device.type == 'cuda'
