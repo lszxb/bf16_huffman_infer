@@ -179,6 +179,7 @@ struct decoder{
 };
 
 
+template <int batch_size>
 __global__ void
 gemv_bf16_huffman_kernel(
     const uchar2* A_rem, const uint32_t* A_exp, const nv_bfloat162* X, nv_bfloat16* Y,
@@ -208,11 +209,7 @@ gemv_bf16_huffman_kernel(
         return; // no work to do
     }
 
-    float y[OP_PER_LANE];
-    #pragma unroll
-    for (int i = 0; i < OP_PER_LANE; i++) {
-        y[i] = 0.0f;
-    }
+    float y[batch_size][OP_PER_LANE] = {};
 
     for (int k = 0; k < split_k; k++) {
         int stride = N / 2;
@@ -223,7 +220,7 @@ gemv_bf16_huffman_kernel(
 
         const uint32_t *pae2 = &A_exp[offsets[warp_group_id] + lane_id + 1];
 
-        std::array<nv_bfloat162, 2> x;
+        std::array<nv_bfloat162, 2> x[batch_size];
         uchar4 ar[OP_PER_LANE];
         uchar4 ae[OP_PER_LANE];
 
@@ -233,7 +230,10 @@ gemv_bf16_huffman_kernel(
         __syncwarp();
 
         for (int count = 0, n_iter = N / (2 * warp_group_size); count < n_iter; count += 1) {
-            x = *px;
+            #pragma unroll
+            for (int i = 0; i < batch_size; i++) {
+                x[i] = px[i * N / (sizeof(X[0]) / sizeof(nv_bfloat16))];
+            }
             const uchar4 *npar = par;
             #pragma unroll
             for (int i = 0; i < OP_PER_LANE; i++) {
@@ -253,8 +253,15 @@ gemv_bf16_huffman_kernel(
 
             // __syncwarp();
 
-            auto v0 = __bfloat1622float2(x[0]);
-            auto v1 = __bfloat1622float2(x[1]);
+            float2 v0[batch_size], v1[batch_size];
+            #pragma unroll
+            for (int i = 0; i < batch_size; i++) {
+                v0[i] = __bfloat1622float2(x[i][0]);
+                v1[i] = __bfloat1622float2(x[i][1]);
+            }
+
+            // auto v0 = __bfloat1622float2(x[0]);
+            // auto v1 = __bfloat1622float2(x[1]);
 
             #pragma unroll
             for (int i = 0; i < OP_PER_LANE; i++) {
@@ -272,7 +279,10 @@ gemv_bf16_huffman_kernel(
                 } bf161{((rem1 << 8) & 0x80008000) | (rem1 & 0x007F007F) | (exp1 << 7)};
                 auto u0 = __bfloat1622float2(bf160.u);
                 auto u1 = __bfloat1622float2(bf161.u);
-                y[i] += (u0.x * v0.x + u0.y * v0.y) + (u1.x * v1.x + u1.y * v1.y);
+                #pragma unroll
+                for (int j = 0; j < batch_size; j++) {
+                    y[j][i] += (u0.x * v0[j].x + u0.y * v0[j].y) + (u1.x * v1[j].x + u1.y * v1[j].y);
+                }
             }
         }
         
@@ -284,7 +294,7 @@ gemv_bf16_huffman_kernel(
 
             // N /= split_k;
             A_rem += M * N / sizeof(A_rem[0]);
-            X += N / (sizeof(X[0]) / sizeof(nv_bfloat16));
+            X += batch_size * N / (sizeof(X[0]) / sizeof(nv_bfloat16));
             offsets += offsets_stride;
         }
     }
@@ -292,10 +302,13 @@ gemv_bf16_huffman_kernel(
     // warp reduce on y
     __syncwarp();
     #pragma unroll
-    for (int i = 0; i < OP_PER_LANE; i++) {
+    for (int b = 0; b < batch_size; b++) {
         #pragma unroll
-        for (int j = warpSize / 2; j > 0; j /= 2) {
-            y[i] += __shfl_down_sync(0xFFFFFFFF, y[i], j);
+        for (int i = 0; i < OP_PER_LANE; i++) {
+            #pragma unroll
+            for (int j = warpSize / 2; j > 0; j /= 2) {
+                y[b][i] += __shfl_down_sync(0xFFFFFFFF, y[b][i], j);
+            }
         }
     }
 
@@ -304,9 +317,13 @@ gemv_bf16_huffman_kernel(
 
     if (lane_id == 0) {
         #pragma unroll
-        for (int i = 0; i < OP_PER_LANE; i++) {
-            Y[(warp_group_id * OP_PER_LANE) + i] = __float2bfloat16(y[i]);
-            // atomicAdd(&Y[(warp_group_id * OP_PER_LANE) + i], __float2bfloat16(y[i]));
+        for (int b = 0; b < batch_size; b++) {
+            #pragma unroll
+            for (int i = 0; i < OP_PER_LANE; i++) {
+                Y[(warp_group_id * OP_PER_LANE) + i] = __float2bfloat16(y[b][i]);
+                // atomicAdd(&Y[(warp_group_id * OP_PER_LANE) + i], __float2bfloat16(y[i]));
+            }
+            Y += M;
         }
     }
 }
@@ -334,7 +351,7 @@ void gemv_bf16_huffman(
 
     auto stream = c10::cuda::getCurrentCUDAStream(A_rem.device().index()).stream();
 
-    gemv_bf16_huffman_kernel<<<grid_size, block_size, 0, stream>>>(
+    gemv_bf16_huffman_kernel<1><<<grid_size, block_size, 0, stream>>>(
         static_cast<const uchar2*>(A_rem.const_data_ptr()),
         static_cast<const uint32_t*>(A_exp.const_data_ptr()),
         static_cast<const nv_bfloat162*>(X.const_data_ptr()),
