@@ -232,7 +232,7 @@ gemv_bf16_huffman_kernel(
         for (int count = 0, n_iter = N / (2 * warp_group_size); count < n_iter; count += 1) {
             #pragma unroll
             for (int i = 0; i < batch_size; i++) {
-                x[i] = px[i * N / (sizeof(X[0]) / sizeof(nv_bfloat16))];
+                x[i] = px[i * (split_k * N / (sizeof(px[0]) / sizeof(nv_bfloat16)))];
             }
             const uchar4 *npar = par;
             #pragma unroll
@@ -294,7 +294,7 @@ gemv_bf16_huffman_kernel(
 
             // N /= split_k;
             A_rem += M * N / sizeof(A_rem[0]);
-            X += batch_size * N / (sizeof(X[0]) / sizeof(nv_bfloat16));
+            X += N / (sizeof(X[0]) / sizeof(nv_bfloat16));
             offsets += offsets_stride;
         }
     }
@@ -329,6 +329,17 @@ gemv_bf16_huffman_kernel(
 }
 
 
+#define REP_1_8(x, y, ...) \
+    { constexpr int x = 1; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 2; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 3; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 4; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 5; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 6; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 7; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 8; if (y == x) {__VA_ARGS__;} }
+
+
 void gemv_bf16_huffman(
     const torch::Tensor &A_rem,
     const torch::Tensor &A_exp,
@@ -351,18 +362,23 @@ void gemv_bf16_huffman(
 
     auto stream = c10::cuda::getCurrentCUDAStream(A_rem.device().index()).stream();
 
-    gemv_bf16_huffman_kernel<1><<<grid_size, block_size, 0, stream>>>(
-        static_cast<const uchar2*>(A_rem.const_data_ptr()),
-        static_cast<const uint32_t*>(A_exp.const_data_ptr()),
-        static_cast<const nv_bfloat162*>(X.const_data_ptr()),
-        static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
-        static_cast<const uint32_t*>(offsets.const_data_ptr()),
-        static_cast<const uint8_t*>(LUT1.const_data_ptr()),
-        static_cast<const uint8_t*>(LUT2.const_data_ptr()),
-        static_cast<const uint8_t*>(LUT3.const_data_ptr()),
-        static_cast<const uint8_t*>(LUT4.const_data_ptr()),
-        static_cast<const uint8_t*>(code_lengths.const_data_ptr()),
-        M, N, split_k
+    int batch_size = X.size(0);
+
+    REP_1_8(
+        b, batch_size,
+        gemv_bf16_huffman_kernel<b><<<grid_size, block_size, 0, stream>>>(
+            static_cast<const uchar2*>(A_rem.const_data_ptr()),
+            static_cast<const uint32_t*>(A_exp.const_data_ptr()),
+            static_cast<const nv_bfloat162*>(X.const_data_ptr()),
+            static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
+            static_cast<const uint32_t*>(offsets.const_data_ptr()),
+            static_cast<const uint8_t*>(LUT1.const_data_ptr()),
+            static_cast<const uint8_t*>(LUT2.const_data_ptr()),
+            static_cast<const uint8_t*>(LUT3.const_data_ptr()),
+            static_cast<const uint8_t*>(LUT4.const_data_ptr()),
+            static_cast<const uint8_t*>(code_lengths.const_data_ptr()),
+            M, N, split_k
+        )
     );
 }
 
