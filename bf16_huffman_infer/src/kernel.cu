@@ -363,6 +363,7 @@ void gemv_bf16_huffman(
     auto stream = c10::cuda::getCurrentCUDAStream(A_rem.device().index()).stream();
 
     int batch_size = X.size(0);
+    TORCH_CHECK_LE(batch_size, 8);
 
     REP_1_8(
         b, batch_size,

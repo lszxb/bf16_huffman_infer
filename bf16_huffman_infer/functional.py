@@ -57,7 +57,7 @@ def mv_huffman(
     
     split_k, M, N = A_rem.shape
     
-    X = X.view(split_k, N)
+    X = X.view(-1, split_k, N)
     
     assert M % 128 == 0
     assert N % 128 == 0
@@ -77,7 +77,7 @@ def mv_huffman(
     LUT4 = LUT4.contiguous()
     code_lengths = code_lengths.contiguous()
     
-    Y = torch.empty((M,), dtype=torch.bfloat16, device=A_rem.device)
+    Y = torch.empty((X.size(0), M), dtype=torch.bfloat16, device=A_rem.device)
     gemv_bf16_huffman(A_rem, A_exp, X, Y, offsets, LUT1, LUT2, LUT3, LUT4, code_lengths)
     return Y
 
@@ -325,14 +325,14 @@ def linear_huffman(input: Tensor, weight: HuffmanWeight, bias: Optional[Tensor] 
     shape = input.shape
     input = input.flatten(0, -2)
     # assert input.size(0) == 1
-    if input.size(0) == 1:
+    if input.size(0) <= 8:
         output = mv_huffman(
-            weight.rem, weight.exp, input[0],
+            weight.rem, weight.exp, input,
             weight.offsets,
             weight.LUT1, weight.LUT2, weight.LUT3, weight.LUT4,
             weight.code_lengths,
             # torch.cat([weight.LUT1, weight.LUT2, weight.LUT3, weight.LUT4, weight.code_lengths]),
-        )[None, :]
+        )
         if bias is not None:
             output += bias[None, :]
     else:
