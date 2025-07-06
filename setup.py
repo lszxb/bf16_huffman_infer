@@ -30,7 +30,7 @@ setup(
                 f"{pkg_name}/src/kernel.cu",
             ],
             extra_compile_args = {
-                'cxx':  ['-std=c++17', '-O3', '-DPy_LIMITED_API=0x03090000'],
+                'cxx':  ['-std=c++17', '-O2', '-DPy_LIMITED_API=0x03090000'],
                 'nvcc': ['-std=c++17', '-arch=sm_75', '-O3', '--use_fast_math', 
                          '-lineinfo', '--ptxas-options=-v --warn-on-spills'],
             },
