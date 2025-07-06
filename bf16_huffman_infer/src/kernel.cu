@@ -58,7 +58,7 @@ __global__ void gemv_bf16_kernel(
     for (int count = 0, n_iter = N / warp_group_size; count < n_iter; count += 1) {
         #pragma unroll
         for (int i = 0; i < batch_size; i++) {
-            x[i] = px[i * (N / (sizeof(px[0]) / sizeof(nv_bfloat16)))];
+            x[i] = px[i * (N * 2 / (sizeof(px[0]) / sizeof(nv_bfloat16)))];
         }
         const std::array<nv_bfloat162, 2> *npa = pa;
         #pragma unroll
