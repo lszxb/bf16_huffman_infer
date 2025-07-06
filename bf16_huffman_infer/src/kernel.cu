@@ -130,7 +130,7 @@ void gemv_bf16(
     auto stream = c10::cuda::getCurrentCUDAStream(A.device().index()).stream();
 
     int batch_size = X.size(0);
-    TORCH_CHECK_LE(batch_size, 8, "Batch size must be less than or equal to 8");
+    TORCH_CHECK_LE(batch_size, 8);
 
     REP_1_8(
         b, batch_size,
