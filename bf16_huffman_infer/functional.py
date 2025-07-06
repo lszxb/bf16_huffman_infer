@@ -28,8 +28,8 @@ def mv(A: Tensor, X: Tensor) -> Tensor:
     
     # assert M % 256 == 0
     assert N % 256 == 0
-    assert len(X.shape) == 1
-    assert X.size(0) == N
+    assert len(X.shape) == 2
+    assert X.size(1) == N
     assert A.dtype == X.dtype
     assert A.device.type == X.device.type == 'cuda'
     assert A.device == X.device
@@ -38,7 +38,7 @@ def mv(A: Tensor, X: Tensor) -> Tensor:
     A = A.contiguous()
     X = X.contiguous()
     
-    Y = torch.empty((M,), dtype=A.dtype, device=A.device)
+    Y = torch.empty((X.size(0), M), dtype=A.dtype, device=A.device)
     gemv_bf16(A, X, Y)
     
     return Y
@@ -86,9 +86,9 @@ def linear(input: Tensor, weight: Tensor, bias: Optional[Tensor] = None) -> Tens
     assert input.dim() >= 2, input
     shape = input.shape
     input = input.flatten(0, -2)
-    assert input.size(0) == 1
+    assert input.size(0) <= 8
     
-    output = mv(weight, input[0])[None, :]
+    output = mv(weight, input)
     if bias is not None:
         output += bias[None, :]
     

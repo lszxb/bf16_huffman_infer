@@ -3,6 +3,18 @@
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 
+
+#define REP_1_8(x, y, ...) \
+    { constexpr int x = 1; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 2; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 3; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 4; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 5; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 6; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 7; if (y == x) {__VA_ARGS__;} } \
+    { constexpr int x = 8; if (y == x) {__VA_ARGS__;} }
+
+
 #define OP_PER_LANE 1
 
 namespace bf16_huffman_infer {
@@ -12,6 +24,7 @@ static int ceil_div(int a, int b) {
 }
 
 
+template <int batch_size>
 __global__ void gemv_bf16_kernel(
     const nv_bfloat162* A, const nv_bfloat162* X, nv_bfloat16* Y,
     int M, int N
@@ -36,19 +49,17 @@ __global__ void gemv_bf16_kernel(
     const std::array<nv_bfloat162, 2> *pa = (const std::array<nv_bfloat162, 2> *)&A[(warp_group_id * OP_PER_LANE - boundry_offset) * stride + lane_id];
     const std::array<nv_bfloat162, 2> *px = (const std::array<nv_bfloat162, 2> *)&X[lane_id];
 
-    std::array<nv_bfloat162, 2> x;
+    std::array<nv_bfloat162, 2> x[batch_size];
     std::array<nv_bfloat162, 2> a[OP_PER_LANE];
-    float y[OP_PER_LANE];
-
-    #pragma unroll
-    for (int i = 0; i < OP_PER_LANE; i++) {
-        y[i] = 0.0f;
-    }
+    float y[batch_size][OP_PER_LANE] = {};
 
     __syncwarp();
 
     for (int count = 0, n_iter = N / warp_group_size; count < n_iter; count += 1) {
-        x = *px;
+        #pragma unroll
+        for (int i = 0; i < batch_size; i++) {
+            x[i] = px[i * (N / (sizeof(px[0]) / sizeof(nv_bfloat16)))];
+        }
         const std::array<nv_bfloat162, 2> *npa = pa;
         #pragma unroll
         for (int i = 0; i < OP_PER_LANE; i++) {
@@ -58,23 +69,33 @@ __global__ void gemv_bf16_kernel(
         pa += warpSize;
         px += warpSize;
 
-        auto v0 = __bfloat1622float2(x[0]);
-        auto v1 = __bfloat1622float2(x[1]);
+
+        float2 v0[batch_size], v1[batch_size];
+        #pragma unroll
+        for (int i = 0; i < batch_size; i++) {
+            v0[i] = __bfloat1622float2(x[i][0]);
+            v1[i] = __bfloat1622float2(x[i][1]);
+        }
         #pragma unroll
         for (int i = 0; i < OP_PER_LANE; i++) {
             auto u0 = __bfloat1622float2(a[i][0]);
             auto u1 = __bfloat1622float2(a[i][1]);
-            y[i] += (u0.x * v0.x + u0.y * v0.y) + (u1.x * v1.x + u1.y * v1.y);
+            for (int b = 0; b < batch_size; b++) {
+                y[b][i] += (u0.x * v0[b].x + u0.y * v0[b].y) + (u1.x * v1[b].x + u1.y * v1[b].y);
+            }
         }
     }
 
     // warp reduce on y
     __syncwarp();
     #pragma unroll
-    for (int i = 0; i < OP_PER_LANE; i++) {
+    for (int b = 0; b < batch_size; b++) {
         #pragma unroll
-        for (int j = warpSize / 2; j > 0; j /= 2) {
-            y[i] += __shfl_down_sync(0xFFFFFFFF, y[i], j);
+        for (int i = 0; i < OP_PER_LANE; i++) {
+            #pragma unroll
+            for (int j = warpSize / 2; j > 0; j /= 2) {
+                y[b][i] += __shfl_down_sync(0xFFFFFFFF, y[b][i], j);
+            }
         }
     }
 
@@ -83,8 +104,12 @@ __global__ void gemv_bf16_kernel(
 
     if (lane_id == 0) {
         #pragma unroll
-        for (int i = 0; i < OP_PER_LANE; i++) {
-            Y[(warp_group_id * OP_PER_LANE - boundry_offset) + i] = __float2bfloat16(y[i]);
+        for (int b = 0; b < batch_size; b++) {
+            #pragma unroll
+            for (int i = 0; i < OP_PER_LANE; i++) {
+                Y[(warp_group_id * OP_PER_LANE - boundry_offset) + i] = __float2bfloat16(y[b][i]);
+            }
+            Y += M;
         }
     }
 }
@@ -104,11 +129,17 @@ void gemv_bf16(
 
     auto stream = c10::cuda::getCurrentCUDAStream(A.device().index()).stream();
 
-    gemv_bf16_kernel<<<grid_size, block_size, 0, stream>>>(
-        static_cast<const nv_bfloat162*>(A.const_data_ptr()),
-        static_cast<const nv_bfloat162*>(X.const_data_ptr()),
-        static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
-        M, N
+    int batch_size = X.size(0);
+    TORCH_CHECK_LE(batch_size, 8, "Batch size must be less than or equal to 8");
+
+    REP_1_8(
+        b, batch_size,
+        gemv_bf16_kernel<b><<<grid_size, block_size, 0, stream>>>(
+            static_cast<const nv_bfloat162*>(A.const_data_ptr()),
+            static_cast<const nv_bfloat162*>(X.const_data_ptr()),
+            static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
+            M, N
+        )
     );
 }
 
@@ -327,17 +358,6 @@ gemv_bf16_huffman_kernel(
         }
     }
 }
-
-
-#define REP_1_8(x, y, ...) \
-    { constexpr int x = 1; if (y == x) {__VA_ARGS__;} } \
-    { constexpr int x = 2; if (y == x) {__VA_ARGS__;} } \
-    { constexpr int x = 3; if (y == x) {__VA_ARGS__;} } \
-    { constexpr int x = 4; if (y == x) {__VA_ARGS__;} } \
-    { constexpr int x = 5; if (y == x) {__VA_ARGS__;} } \
-    { constexpr int x = 6; if (y == x) {__VA_ARGS__;} } \
-    { constexpr int x = 7; if (y == x) {__VA_ARGS__;} } \
-    { constexpr int x = 8; if (y == x) {__VA_ARGS__;} }
 
 
 void gemv_bf16_huffman(
