@@ -191,6 +191,7 @@ struct decoder{
         uint8_t symbol;
 
         if (remaining_bits < 32) {
+            // TODO: *pae is interleaved load, fix it
             state.data |= uint64_t(*pae) << remaining_bits;
             pae += warp_group_size;
             remaining_bits += 32;
@@ -257,12 +258,10 @@ gemv_bf16_huffman_kernel(
 
     __syncthreads();
 
-    int thread_id = ((blockIdx.x * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x) * 2;
+    int thread_id = (blockIdx.x * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
 
-    int warp_group_size = warpSize * 2;
-
-    int warp_group_id = thread_id / warp_group_size;
-    int lane_id = thread_id % warp_group_size;
+    int warp_group_id = thread_id / warpSize;
+    int lane_id = thread_id % warpSize * 2;
 
     if (warp_group_id * OP_PER_LANE > M) {
         return; // no work to do
@@ -273,22 +272,22 @@ gemv_bf16_huffman_kernel(
     for (int k = 0; k < split_k; k++) {
         int stride = N / 2;
 
-        const uchar4 *par = (const uchar4 *)&A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
-        const uint32_t *pae = &A_exp[offsets[warp_group_id] + lane_id];
         const vec<nv_bfloat162, 2> *px = (const vec<nv_bfloat162, 2> *)&X[lane_id];
+        const uchar4 *par = (const uchar4 *)&A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
 
-        const uint32_t *pae2 = &A_exp[offsets[warp_group_id] + lane_id + 1];
+        const uint32_t *pae0 = &A_exp[offsets[warp_group_id] + lane_id];
+        const uint32_t *pae1 = &A_exp[offsets[warp_group_id] + lane_id + 1];
 
         vec<nv_bfloat162, 2> x[batch_size];
         uchar4 ar[OP_PER_LANE];
         uchar4 ae[OP_PER_LANE];
 
-        decoder dec;
-        decoder dec2;
+        decoder dec0;
+        decoder dec1;
 
         __syncwarp();
 
-        for (int count = 0, n_iter = N / (2 * warp_group_size); count < n_iter; count += 1) {
+        for (int count = 0, n_iter = N / (4 * warpSize); count < n_iter; count += 1) {
             #pragma unroll
             for (int i = 0; i < batch_size; i++) {
                 // NOTE: it will not work as expected: vector load 64bit, if using array<nv_bfloat162,2>
@@ -306,10 +305,10 @@ gemv_bf16_huffman_kernel(
 
             #pragma unroll
             for (int i = 0; i < OP_PER_LANE; i++) {
-                ae[i].x = dec.decode_symbol2(pae, warp_group_size, &sh_LUT);
-                ae[i].z = dec2.decode_symbol2(pae2, warp_group_size, &sh_LUT);
-                ae[i].y = dec.decode_symbol2(pae, warp_group_size, &sh_LUT);
-                ae[i].w = dec2.decode_symbol2(pae2, warp_group_size, &sh_LUT);
+                ae[i].x = dec0.decode_symbol2(pae0, warpSize * 2, &sh_LUT);
+                ae[i].z = dec1.decode_symbol2(pae1, warpSize * 2, &sh_LUT);
+                ae[i].y = dec0.decode_symbol2(pae0, warpSize * 2, &sh_LUT);
+                ae[i].w = dec1.decode_symbol2(pae1, warpSize * 2, &sh_LUT);
             }
 
             // __syncwarp();
