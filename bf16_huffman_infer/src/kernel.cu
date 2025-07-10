@@ -428,14 +428,21 @@ void gemv_bf16_huffman(
 
     cudaDeviceProp deviceProp;
     TORCH_CHECK(cudaGetDeviceProperties(&deviceProp, A_rem.device().index()) == cudaSuccess);
+    cudaFuncAttributes attrs;
+    TORCH_CHECK(cudaFuncGetAttributes(&attrs, gemv_bf16_huffman_kernel<1>) == cudaSuccess);
 
-    int max_blocks_per_wave = deviceProp.multiProcessorCount * \
-        (deviceProp.maxThreadsPerMultiProcessor / (block_size.x * block_size.y));
+    int max_threads_per_sm = min(
+        deviceProp.maxThreadsPerMultiProcessor,
+        deviceProp.regsPerMultiprocessor / (ceil_div(attrs.numRegs, 8) * 8)
+    );
+    // printf("%d %d\n", deviceProp.regsPerMultiprocessor, attrs.numRegs);
+    int max_blocks_per_sm = max_threads_per_sm / (block_size.x * block_size.y);
+    int max_blocks_per_wave = deviceProp.multiProcessorCount * max_blocks_per_sm;
     int min_num_wave = ceil_div(grid_size.x, max_blocks_per_wave);
     int num_blocks_per_wave = ceil_div(grid_size.x, min_num_wave);
     grid_size.x = num_blocks_per_wave;
 
-    printf("%d %d %d\n", max_blocks_per_wave, min_num_wave, num_blocks_per_wave);
+    // printf("%d %d %d %d\n", max_threads_per_sm, max_blocks_per_wave, min_num_wave, num_blocks_per_wave);
 
     REP_1_8(
         b, batch_size,
