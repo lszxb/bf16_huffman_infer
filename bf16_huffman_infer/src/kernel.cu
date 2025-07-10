@@ -269,8 +269,8 @@ gemv_bf16_huffman_kernel(
         int warp_group_id = thread_id / warpSize;
         int lane_id = thread_id % warpSize;
 
-        if (warp_group_id * OP_PER_LANE > M) {
-            continue; // no work to do
+        if (warp_group_id * OP_PER_LANE >= M) {
+            return; // no work to do
         }
 
         float y[batch_size][OP_PER_LANE] = {};
