@@ -241,7 +241,7 @@ union vec {
 template <int batch_size>
 __global__ void
 gemv_bf16_huffman_kernel(
-    const uchar2* A_rem, const uint32_t* A_exp, const nv_bfloat16* X, nv_bfloat16* Y,
+    const uchar2* A_rem, const uint32_t* A_exp, const nv_bfloat162* X, nv_bfloat16* Y,
     const uint32_t* offsets,
     const uint8_t* LUT1, const uint8_t* LUT2, const uint8_t* LUT3, const uint8_t* LUT4,
     const uint8_t* code_lengths,
@@ -355,7 +355,7 @@ gemv_bf16_huffman_kernel(
 
             // N /= split_k;
             A_rem += M * N / sizeof(A_rem[0]);
-            X += N;
+            X += N / (sizeof(X[0]) / sizeof(nv_bfloat16));
             offsets += offsets_stride;
         }
     }
@@ -420,7 +420,7 @@ void gemv_bf16_huffman(
         gemv_bf16_huffman_kernel<b><<<grid_size, block_size, 0, stream>>>(
             static_cast<const uchar2*>(A_rem.const_data_ptr()),
             static_cast<const uint32_t*>(A_exp.const_data_ptr()),
-            static_cast<const nv_bfloat16*>(X.const_data_ptr()),
+            static_cast<const nv_bfloat162*>(X.const_data_ptr()),
             static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
             static_cast<const uint32_t*>(offsets.const_data_ptr()),
             static_cast<const uint8_t*>(LUT1.const_data_ptr()),
