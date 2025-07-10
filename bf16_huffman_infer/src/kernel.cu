@@ -210,10 +210,38 @@ struct decoder{
 };
 
 
+template <int width> struct vector_type {};
+template <> struct vector_type<1> { using type = uint1; };
+template <> struct vector_type<2> { using type = uint2; };
+template <> struct vector_type<4> { using type = uint4; };
+
+template <typename T, int width>
+union vec {
+    using vector_type = typename vector_type<width>::type;
+    vector_type data;
+    T value[width];
+
+    __device__ __inline__ vec<T, width>& operator=(const vec<T, width>& other) {
+        data = other.data;
+        return *this;
+    }
+
+    __device__ __inline__ vec<T, width>& operator=(vec<T, width>&& other) {
+        data = other.data;
+        return *this;
+    }
+
+    template <typename I>
+    __device__ __inline__ T operator[](I index) {
+        return value[index];
+    }
+};
+
+
 template <int batch_size>
 __global__ void
 gemv_bf16_huffman_kernel(
-    const uchar2* A_rem, const uint32_t* A_exp, const nv_bfloat162* X, nv_bfloat16* Y,
+    const uchar2* A_rem, const uint32_t* A_exp, const nv_bfloat16* X, nv_bfloat16* Y,
     const uint32_t* offsets,
     const uint8_t* LUT1, const uint8_t* LUT2, const uint8_t* LUT3, const uint8_t* LUT4,
     const uint8_t* code_lengths,
@@ -247,11 +275,11 @@ gemv_bf16_huffman_kernel(
 
         const uchar4 *par = (const uchar4 *)&A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
         const uint32_t *pae = &A_exp[offsets[warp_group_id] + lane_id];
-        const std::array<nv_bfloat162, 2> *px = (const std::array<nv_bfloat162, 2> *)&X[lane_id];
+        const vec<nv_bfloat162, 2> *px = (const vec<nv_bfloat162, 2> *)&X[lane_id];
 
         const uint32_t *pae2 = &A_exp[offsets[warp_group_id] + lane_id + 1];
 
-        std::array<nv_bfloat162, 2> x[batch_size];
+        vec<nv_bfloat162, 2> x[batch_size];
         uchar4 ar[OP_PER_LANE];
         uchar4 ae[OP_PER_LANE];
 
@@ -263,6 +291,8 @@ gemv_bf16_huffman_kernel(
         for (int count = 0, n_iter = N / (2 * warp_group_size); count < n_iter; count += 1) {
             #pragma unroll
             for (int i = 0; i < batch_size; i++) {
+                // NOTE: it will not work as expected: vector load 64bit, if using array<nv_bfloat162,2>
+                // instead, it load 2 32bits load, with interleaved layout, which is much slower
                 x[i] = px[i * (split_k * N / (sizeof(px[0]) / sizeof(nv_bfloat16)))];
             }
             const uchar4 *npar = par;
@@ -325,7 +355,7 @@ gemv_bf16_huffman_kernel(
 
             // N /= split_k;
             A_rem += M * N / sizeof(A_rem[0]);
-            X += N / (sizeof(X[0]) / sizeof(nv_bfloat16));
+            X += N;
             offsets += offsets_stride;
         }
     }
@@ -390,7 +420,7 @@ void gemv_bf16_huffman(
         gemv_bf16_huffman_kernel<b><<<grid_size, block_size, 0, stream>>>(
             static_cast<const uchar2*>(A_rem.const_data_ptr()),
             static_cast<const uint32_t*>(A_exp.const_data_ptr()),
-            static_cast<const nv_bfloat162*>(X.const_data_ptr()),
+            static_cast<const nv_bfloat16*>(X.const_data_ptr()),
             static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
             static_cast<const uint32_t*>(offsets.const_data_ptr()),
             static_cast<const uint8_t*>(LUT1.const_data_ptr()),
