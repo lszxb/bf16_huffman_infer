@@ -270,7 +270,7 @@ gemv_bf16_huffman_kernel(
     float y[batch_size][OP_PER_LANE] = {};
 
     for (int k = 0; k < split_k; k++) {
-        int stride = N;
+        int stride = N / 4;
 
         const vec<nv_bfloat162, 2> *px = &X[lane_id];
         const uchar4 *par = &A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
@@ -298,7 +298,7 @@ gemv_bf16_huffman_kernel(
             #pragma unroll
             for (int i = 0; i < OP_PER_LANE; i++) {
                 ar[i] = *npar;
-                npar += stride / 2;
+                npar += stride;
             }
             par += warpSize;
             px += warpSize;
