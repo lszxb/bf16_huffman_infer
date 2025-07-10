@@ -404,7 +404,10 @@ void gemv_bf16_huffman(
     int M = A_rem.size(1);
     int N = A_rem.size(2);
 
-    int num_warps_per_block = 4; // TODO: If 3 will crash randomly
+    cudaDeviceProp attr;
+    TORCH_CHECK(cudaGetDeviceProperties(&attr, A_rem.device().index()) == cudaSuccess);
+    int num_warps_per_block = attr.maxThreadsPerMultiProcessor / 32 / attr.maxBlocksPerMultiProcessor;
+
     auto block_size = dim3(32, num_warps_per_block, 1);
     auto grid_size = dim3(ceil_div(M, OP_PER_LANE * num_warps_per_block), 1, 1);
 
