@@ -242,7 +242,7 @@ union vec {
 template <int batch_size>
 __global__ void
 gemv_bf16_huffman_kernel(
-    const uchar2* A_rem, const uint32_t* A_exp, const nv_bfloat162* X, nv_bfloat16* Y,
+    const uchar4* A_rem, const uint32_t* A_exp, const vec<nv_bfloat162, 2>* X, nv_bfloat16* Y,
     const uint32_t* offsets,
     const uint8_t* LUT1, const uint8_t* LUT2, const uint8_t* LUT3, const uint8_t* LUT4,
     const uint8_t* code_lengths,
@@ -261,7 +261,7 @@ gemv_bf16_huffman_kernel(
     int thread_id = (blockIdx.x * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
 
     int warp_group_id = thread_id / warpSize;
-    int lane_id = thread_id % warpSize * 2;
+    int lane_id = thread_id % warpSize;
 
     if (warp_group_id * OP_PER_LANE > M) {
         return; // no work to do
@@ -270,13 +270,13 @@ gemv_bf16_huffman_kernel(
     float y[batch_size][OP_PER_LANE] = {};
 
     for (int k = 0; k < split_k; k++) {
-        int stride = N / 2;
+        int stride = N;
 
-        const vec<nv_bfloat162, 2> *px = (const vec<nv_bfloat162, 2> *)&X[lane_id];
-        const uchar4 *par = (const uchar4 *)&A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
+        const vec<nv_bfloat162, 2> *px = &X[lane_id];
+        const uchar4 *par = &A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
 
-        const uint32_t *pae0 = &A_exp[offsets[warp_group_id] + lane_id];
-        const uint32_t *pae1 = &A_exp[offsets[warp_group_id] + lane_id + 1];
+        const uint32_t *pae0 = &A_exp[offsets[warp_group_id] + 2 * lane_id + 0];
+        const uint32_t *pae1 = &A_exp[offsets[warp_group_id] + 2 * lane_id + 1];
 
         vec<nv_bfloat162, 2> x[batch_size];
         uchar4 ar[OP_PER_LANE];
@@ -417,9 +417,9 @@ void gemv_bf16_huffman(
     REP_1_8(
         b, batch_size,
         gemv_bf16_huffman_kernel<b><<<grid_size, block_size, 0, stream>>>(
-            static_cast<const uchar2*>(A_rem.const_data_ptr()),
+            static_cast<const uchar4*>(A_rem.const_data_ptr()),
             static_cast<const uint32_t*>(A_exp.const_data_ptr()),
-            static_cast<const nv_bfloat162*>(X.const_data_ptr()),
+            static_cast<const vec<nv_bfloat162, 2>*>(X.const_data_ptr()),
             static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
             static_cast<const uint32_t*>(offsets.const_data_ptr()),
             static_cast<const uint8_t*>(LUT1.const_data_ptr()),
