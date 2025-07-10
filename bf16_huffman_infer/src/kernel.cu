@@ -263,7 +263,7 @@ gemv_bf16_huffman_kernel(
     int warp_group_id = thread_id / warpSize;
     int lane_id = thread_id % warpSize;
 
-    if (warp_group_id * OP_PER_LANE > M) {
+    if (warp_group_id * OP_PER_LANE >= M) {
         return; // no work to do
     }
 
@@ -347,18 +347,16 @@ gemv_bf16_huffman_kernel(
         }
         
         {
-            // handle split k
-            int num_warp_groups = blockDim.y * gridDim.x;
-            int offsets_stride = num_warp_groups;
-            // printf("%d\n", offsets_stride);
-
-            // N /= split_k;
             A_rem += M * N / sizeof(A_rem[0]);
             X += N / (sizeof(X[0]) / sizeof(nv_bfloat16));
-            offsets += offsets_stride;
+            offsets += M;
         }
     }
+    A_rem -= M * N / sizeof(A_rem[0]) * split_k;
+    X -= N / (sizeof(X[0]) / sizeof(nv_bfloat16)) * split_k;
+    offsets -= M * split_k;
 
+    
     // warp reduce on y
     __syncwarp();
     #pragma unroll
@@ -385,6 +383,7 @@ gemv_bf16_huffman_kernel(
             }
             Y += M;
         }
+        Y -= M * batch_size; // reset Y pointer to the start of the batch
     }
 }
 
