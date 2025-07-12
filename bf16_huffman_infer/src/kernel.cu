@@ -251,6 +251,8 @@ gemv_bf16_huffman_kernel(
     int M, int N, int split_k,
     int num_waves
 ) {
+    static int task_count = 0;
+
     __shared__ LUT sh_LUT;
 
     ((uint64_t*)sh_LUT.LUT1)[threadIdx.x] = ((const uint64_t*)LUT1)[threadIdx.x];
@@ -261,12 +263,17 @@ gemv_bf16_huffman_kernel(
 
     __syncthreads();
 
-    for (int wave_count = 0; wave_count < num_waves; wave_count++) {
-        int block_idx = blockIdx.x + wave_count * gridDim.x;
+    int warp_group_id = blockIdx.x * blockDim.y + threadIdx.y;
 
-        int thread_id = (block_idx * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
+    // for (int wave_count = 0; wave_count < num_waves; wave_count++) {
+    for (;;) {
+        // int block_idx = blockIdx.x + wave_count * gridDim.x;
 
-        int warp_group_id = thread_id / warpSize;
+        // int thread_id = (block_idx * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
+
+        // int warp_group_id = thread_id / warpSize;
+
+        int thread_id = warp_group_id * blockDim.x + threadIdx.x;
         int lane_id = thread_id % warpSize;
 
         if (warp_group_id * OP_PER_LANE >= M) {
@@ -396,6 +403,10 @@ gemv_bf16_huffman_kernel(
                 Y += M;
             }
             Y -= M * batch_size; // reset Y pointer to the start of the batch
+        }
+
+        if (threadIdx.x == 0) {
+            warp_group_id = atomicAdd(&task_count, 1) + blockIdx.x * blockDim.y + threadIdx.y;
         }
     }
 }
