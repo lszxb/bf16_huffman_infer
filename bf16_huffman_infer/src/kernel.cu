@@ -406,8 +406,11 @@ gemv_bf16_huffman_kernel(
         }
 
         if (threadIdx.x == 0) {
-            warp_group_id = atomicAdd(&task_count, 1) + blockIdx.x * blockDim.y + threadIdx.y;
+            // maybe change to block level schedule
+            warp_group_id = atomicAdd(&task_count, 1) + gridDim.x * blockDim.y;
         }
+
+        warp_group_id = __shfl_sync(0xFFFFFFFF, warp_group_id, 0);
     }
 }
 
