@@ -18,6 +18,7 @@ def main():
 
     prompt = '"Hello, world!" is a common phrase used in programming examples. It'
     inputs = tok(prompt, return_tensors='pt')
+    inputs = inputs.to('cuda')
     
     ori_size = get_model_size(model)
     gen_len = 256
@@ -34,7 +35,7 @@ def main():
 
     start = monotonic()
     graphed_model.generate(
-        **inputs.to(model.device), streamer=TextStreamer(tok),
+        **inputs, streamer=TextStreamer(tok),
         max_new_tokens=gen_len, min_new_tokens=gen_len,
     )
     torch.cuda.synchronize()
@@ -59,7 +60,7 @@ def main():
 
     start = monotonic()
     graphed_model.generate(
-        **inputs.to(model.device), streamer=TextStreamer(tok),
+        **inputs, streamer=TextStreamer(tok),
         max_new_tokens=gen_len, min_new_tokens=gen_len,
     )
     torch.cuda.synchronize()
