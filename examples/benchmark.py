@@ -33,13 +33,14 @@ def main():
     model.cuda()
     graphed_model = get_graphed_model(model, cache)
 
-    start = monotonic()
-    graphed_model.generate(
-        **inputs, streamer=TextStreamer(tok),
-        max_new_tokens=gen_len, min_new_tokens=gen_len,
-    )
-    torch.cuda.synchronize()
-    print(f'Native BF16 inference takes {monotonic() - start:.2f}s')
+    for _ in range(3):
+        start = monotonic()
+        graphed_model.generate(
+            **inputs, streamer=TextStreamer(tok),
+            max_new_tokens=gen_len, min_new_tokens=gen_len,
+        )
+        torch.cuda.synchronize()
+        print(f'Native BF16 inference takes {monotonic() - start:.2f}s')
 
     del graphed_model
     model.cpu()
@@ -58,13 +59,14 @@ def main():
     model.cuda()
     graphed_model = get_graphed_model(model, cache)
 
-    start = monotonic()
-    graphed_model.generate(
-        **inputs, streamer=TextStreamer(tok),
-        max_new_tokens=gen_len, min_new_tokens=gen_len,
-    )
-    torch.cuda.synchronize()
-    print(f'Compressed BF16 inference takes {monotonic() - start:.2f}s')
+    for _ in range(3):
+        start = monotonic()
+        graphed_model.generate(
+            **inputs, streamer=TextStreamer(tok),
+            max_new_tokens=gen_len, min_new_tokens=gen_len,
+        )
+        torch.cuda.synchronize()
+        print(f'Compressed BF16 inference takes {monotonic() - start:.2f}s')
 
 
 if __name__ == '__main__':
