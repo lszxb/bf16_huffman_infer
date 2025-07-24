@@ -203,7 +203,7 @@ class HuffmanWeight(nn.Module):
             [torch.tensor([0]).to(xx_output_lengths), xx_output_lengths.cumsum(dim=0).to(torch.int32) * x.size(1)]
         )[:-1].cpu()
         
-        rem = rem.view(rem.size(0), -1, 2, 32, 2).transpose(-2, -1).reshape_as(rem)
+        rem = rem.view(rem.size(0), -1, 2, 32, 2).transpose(-3, -2).reshape_as(rem)
         
         compressed = compressed_cuda
         offsets = offsets_cuda
