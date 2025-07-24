@@ -242,7 +242,7 @@ union vec {
 template <int batch_size>
 __global__ void
 gemv_bf16_huffman_kernel(
-    const uchar4* A_rem, const uint32_t* A_exp, const vec<nv_bfloat162, 2>* X, float* Y,
+    const uchar4* A_rem, const uint32_t* A_exp, const nv_bfloat162* X, float* Y,
     const uint32_t* offsets,
     const uint8_t* LUT1, const uint8_t* LUT2, const uint8_t* LUT3, const uint8_t* LUT4,
     const uint8_t* code_lengths,
@@ -279,13 +279,15 @@ gemv_bf16_huffman_kernel(
 
     int stride = N / 4;
 
-    const vec<nv_bfloat162, 2> *px = &X[lane_id];
+    // const vec<nv_bfloat162, 2> *px = &X[lane_id];
+    const nv_bfloat162 *px = &X[lane_id];
     const uchar4 *par = &A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
 
-    const uint32_t *pae0 = &A_exp[offsets[warp_group_id] + 2 * lane_id + 0];
-    const uint32_t *pae1 = &A_exp[offsets[warp_group_id] + 2 * lane_id + 1];
+    const uint32_t *pae0 = &A_exp[offsets[warp_group_id] + lane_id + 0];
+    const uint32_t *pae1 = &A_exp[offsets[warp_group_id] + lane_id + warpSize];
 
-    vec<nv_bfloat162, 2> x[batch_size];
+    // vec<nv_bfloat162, 2> x[batch_size];
+    nv_bfloat162 x[batch_size][2];
     uchar4 ar[OP_PER_LANE];
     uchar4 ae[OP_PER_LANE];
 
@@ -299,7 +301,9 @@ gemv_bf16_huffman_kernel(
         for (int i = 0; i < batch_size; i++) {
             // NOTE: it will not work as expected: vector load 64bit, if using array<nv_bfloat162,2>
             // instead, it load 2 32bits load, with interleaved layout, which is much slower
-            x[i] = px[i * (split_k * N / (sizeof(px[0]) / sizeof(nv_bfloat16)))];
+            // x[i] = px[i * (split_k * N / (sizeof(px[0]) / sizeof(nv_bfloat16)))];
+            x[i][0] = px[i * (split_k * N / (sizeof(px[0]) / sizeof(nv_bfloat16))) + 0];
+            x[i][1] = px[i * (split_k * N / (sizeof(px[0]) / sizeof(nv_bfloat16))) + warpSize];
         }
         const uchar4 *npar = par;
         #pragma unroll
@@ -308,7 +312,7 @@ gemv_bf16_huffman_kernel(
             npar += stride;
         }
         par += warpSize;
-        px += warpSize;
+        px += warpSize * 2;
 
         #pragma unroll
         for (int i = 0; i < OP_PER_LANE; i++) {
@@ -419,7 +423,7 @@ void gemv_bf16_huffman(
         gemv_bf16_huffman_kernel<b><<<grid_size, block_size, 0, stream>>>(
             static_cast<const uchar4*>(A_rem.const_data_ptr()),
             static_cast<const uint32_t*>(A_exp.const_data_ptr()),
-            static_cast<const vec<nv_bfloat162, 2>*>(X.const_data_ptr()),
+            static_cast<const nv_bfloat162*>(X.const_data_ptr()),
             static_cast<float*>(Y.mutable_data_ptr()),
             static_cast<const uint32_t*>(offsets.const_data_ptr()),
             static_cast<const uint8_t*>(LUT1.const_data_ptr()),
