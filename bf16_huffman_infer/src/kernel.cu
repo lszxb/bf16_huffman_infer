@@ -242,7 +242,7 @@ union vec {
 template <int batch_size>
 __global__ void
 gemv_bf16_huffman_kernel(
-    const uchar4* A_rem, const uint32_t* A_exp, const vec<nv_bfloat162, 2>* X, nv_bfloat16* Y,
+    const uchar4* A_rem, const uint32_t* A_exp, const vec<nv_bfloat162, 2>* X, float* Y,
     const uint32_t* offsets,
     const uint8_t* LUT1, const uint8_t* LUT2, const uint8_t* LUT3, const uint8_t* LUT4,
     const uint8_t* code_lengths,
@@ -258,103 +258,100 @@ gemv_bf16_huffman_kernel(
 
     __syncthreads();
 
-    int thread_id = (blockIdx.x * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
+    assert(blockDim.x == warpSize);
 
-    int warp_group_id = thread_id / warpSize;
-    int lane_id = thread_id % warpSize;
+    int warp_group_id = blockIdx.x * blockDim.y + threadIdx.y;
+    int lane_id = threadIdx.x;
+    int thread_id = warp_group_id * blockDim.x + threadIdx.x;
 
-    if (warp_group_id * OP_PER_LANE >= M) {
+    if (warp_group_id * OP_PER_LANE >= M * split_k) {
         return; // no work to do
     }
 
     float y[batch_size][OP_PER_LANE] = {};
 
-    for (int k = 0; k < split_k; k++) {
-        int stride = N / 4;
+    int k = warp_group_id / (M / OP_PER_LANE);
+    warp_group_id %= (M / OP_PER_LANE);
 
-        const vec<nv_bfloat162, 2> *px = &X[lane_id];
-        const uchar4 *par = &A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
+    A_rem += M * N / sizeof(A_rem[0]) * k;
+    X += N / (sizeof(X[0]) / sizeof(nv_bfloat16)) * k;
+    offsets += M * k;
 
-        const uint32_t *pae0 = &A_exp[offsets[warp_group_id] + 2 * lane_id + 0];
-        const uint32_t *pae1 = &A_exp[offsets[warp_group_id] + 2 * lane_id + 1];
+    int stride = N / 4;
 
-        vec<nv_bfloat162, 2> x[batch_size];
-        uchar4 ar[OP_PER_LANE];
-        uchar4 ae[OP_PER_LANE];
+    const vec<nv_bfloat162, 2> *px = &X[lane_id];
+    const uchar4 *par = &A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
 
-        decoder dec0;
-        decoder dec1;
+    const uint32_t *pae0 = &A_exp[offsets[warp_group_id] + 2 * lane_id + 0];
+    const uint32_t *pae1 = &A_exp[offsets[warp_group_id] + 2 * lane_id + 1];
 
-        __syncwarp();
+    vec<nv_bfloat162, 2> x[batch_size];
+    uchar4 ar[OP_PER_LANE];
+    uchar4 ae[OP_PER_LANE];
 
-        for (int count = 0, n_iter = N / (4 * warpSize); count < n_iter; count += 1) {
-            #pragma unroll
-            for (int i = 0; i < batch_size; i++) {
-                // NOTE: it will not work as expected: vector load 64bit, if using array<nv_bfloat162,2>
-                // instead, it load 2 32bits load, with interleaved layout, which is much slower
-                x[i] = px[i * (split_k * N / (sizeof(px[0]) / sizeof(nv_bfloat16)))];
-            }
-            const uchar4 *npar = par;
-            #pragma unroll
-            for (int i = 0; i < OP_PER_LANE; i++) {
-                ar[i] = *npar;
-                npar += stride;
-            }
-            par += warpSize;
-            px += warpSize;
+    decoder dec0;
+    decoder dec1;
 
-            #pragma unroll
-            for (int i = 0; i < OP_PER_LANE; i++) {
-                ae[i].x = dec0.decode_symbol2(pae0, warpSize * 2, &sh_LUT);
-                ae[i].z = dec1.decode_symbol2(pae1, warpSize * 2, &sh_LUT);
-                ae[i].y = dec0.decode_symbol2(pae0, warpSize * 2, &sh_LUT);
-                ae[i].w = dec1.decode_symbol2(pae1, warpSize * 2, &sh_LUT);
-            }
+    __syncwarp();
 
-            // __syncwarp();
-
-            float2 v0[batch_size], v1[batch_size];
-            #pragma unroll
-            for (int i = 0; i < batch_size; i++) {
-                v0[i] = __bfloat1622float2(x[i][0]);
-                v1[i] = __bfloat1622float2(x[i][1]);
-            }
-
-            // auto v0 = __bfloat1622float2(x[0]);
-            // auto v1 = __bfloat1622float2(x[1]);
-
-            #pragma unroll
-            for (int i = 0; i < OP_PER_LANE; i++) {
-                uint32_t rem0 = (uint32_t(ar[i].y) << 16) | ar[i].x;
-                uint32_t rem1 = (uint32_t(ar[i].w) << 16) | ar[i].z;
-                uint32_t exp0 = (uint32_t(ae[i].y) << 16) | ae[i].x;
-                uint32_t exp1 = (uint32_t(ae[i].w) << 16) | ae[i].z;
-                union {
-                    uint32_t _bits;
-                    nv_bfloat162 u;
-                } bf160{((rem0 << 8) & 0x80008000) | (rem0 & 0x007F007F) | (exp0 << 7)};
-                union {
-                    uint32_t _bits;
-                    nv_bfloat162 u;
-                } bf161{((rem1 << 8) & 0x80008000) | (rem1 & 0x007F007F) | (exp1 << 7)};
-                auto u0 = __bfloat1622float2(bf160.u);
-                auto u1 = __bfloat1622float2(bf161.u);
-                #pragma unroll
-                for (int j = 0; j < batch_size; j++) {
-                    y[j][i] += (u0.x * v0[j].x + u0.y * v0[j].y) + (u1.x * v1[j].x + u1.y * v1[j].y);
-                }
-            }
+    for (int count = 0, n_iter = N / (4 * warpSize); count < n_iter; count += 1) {
+        #pragma unroll
+        for (int i = 0; i < batch_size; i++) {
+            // NOTE: it will not work as expected: vector load 64bit, if using array<nv_bfloat162,2>
+            // instead, it load 2 32bits load, with interleaved layout, which is much slower
+            x[i] = px[i * (split_k * N / (sizeof(px[0]) / sizeof(nv_bfloat16)))];
         }
-        
-        {
-            A_rem += M * N / sizeof(A_rem[0]);
-            X += N / (sizeof(X[0]) / sizeof(nv_bfloat16));
-            offsets += M;
+        const uchar4 *npar = par;
+        #pragma unroll
+        for (int i = 0; i < OP_PER_LANE; i++) {
+            ar[i] = *npar;
+            npar += stride;
+        }
+        par += warpSize;
+        px += warpSize;
+
+        #pragma unroll
+        for (int i = 0; i < OP_PER_LANE; i++) {
+            ae[i].x = dec0.decode_symbol2(pae0, warpSize * 2, &sh_LUT);
+            ae[i].z = dec1.decode_symbol2(pae1, warpSize * 2, &sh_LUT);
+            ae[i].y = dec0.decode_symbol2(pae0, warpSize * 2, &sh_LUT);
+            ae[i].w = dec1.decode_symbol2(pae1, warpSize * 2, &sh_LUT);
+        }
+
+        // __syncwarp();
+
+        float2 v0[batch_size], v1[batch_size];
+        #pragma unroll
+        for (int i = 0; i < batch_size; i++) {
+            v0[i] = __bfloat1622float2(x[i][0]);
+            v1[i] = __bfloat1622float2(x[i][1]);
+        }
+
+        // auto v0 = __bfloat1622float2(x[0]);
+        // auto v1 = __bfloat1622float2(x[1]);
+
+        #pragma unroll
+        for (int i = 0; i < OP_PER_LANE; i++) {
+            uint32_t rem0 = (uint32_t(ar[i].y) << 16) | ar[i].x;
+            uint32_t rem1 = (uint32_t(ar[i].w) << 16) | ar[i].z;
+            uint32_t exp0 = (uint32_t(ae[i].y) << 16) | ae[i].x;
+            uint32_t exp1 = (uint32_t(ae[i].w) << 16) | ae[i].z;
+            union {
+                uint32_t _bits;
+                nv_bfloat162 u;
+            } bf160{((rem0 << 8) & 0x80008000) | (rem0 & 0x007F007F) | (exp0 << 7)};
+            union {
+                uint32_t _bits;
+                nv_bfloat162 u;
+            } bf161{((rem1 << 8) & 0x80008000) | (rem1 & 0x007F007F) | (exp1 << 7)};
+            auto u0 = __bfloat1622float2(bf160.u);
+            auto u1 = __bfloat1622float2(bf161.u);
+            #pragma unroll
+            for (int j = 0; j < batch_size; j++) {
+                y[j][i] += (u0.x * v0[j].x + u0.y * v0[j].y) + (u1.x * v1[j].x + u1.y * v1[j].y);
+            }
         }
     }
-    A_rem -= M * N / sizeof(A_rem[0]) * split_k;
-    X -= N / (sizeof(X[0]) / sizeof(nv_bfloat16)) * split_k;
-    offsets -= M * split_k;
 
     
     // warp reduce on y
@@ -378,8 +375,9 @@ gemv_bf16_huffman_kernel(
         for (int b = 0; b < batch_size; b++) {
             #pragma unroll
             for (int i = 0; i < OP_PER_LANE; i++) {
-                Y[(warp_group_id * OP_PER_LANE) + i] = __float2bfloat16(y[b][i]);
-                // atomicAdd(&Y[(warp_group_id * OP_PER_LANE) + i], __float2bfloat16(y[i]));
+                // Y[(warp_group_id * OP_PER_LANE) + i] = __float2bfloat16(y[b][i]);
+                // atomicAdd(&Y[(warp_group_id * OP_PER_LANE) + i], __float2bfloat16(y[b][i]));
+                atomicAdd(&Y[(warp_group_id * OP_PER_LANE) + i], y[b][i]);
             }
             Y += M;
         }
@@ -409,7 +407,7 @@ void gemv_bf16_huffman(
     int num_warps_per_block = attr.maxThreadsPerMultiProcessor / 32 / attr.maxBlocksPerMultiProcessor;
 
     auto block_size = dim3(32, num_warps_per_block, 1);
-    auto grid_size = dim3(ceil_div(M, OP_PER_LANE * num_warps_per_block), 1, 1);
+    auto grid_size = dim3(ceil_div(M * split_k, OP_PER_LANE * num_warps_per_block), 1, 1);
 
     auto stream = c10::cuda::getCurrentCUDAStream(A_rem.device().index()).stream();
 
@@ -422,7 +420,7 @@ void gemv_bf16_huffman(
             static_cast<const uchar4*>(A_rem.const_data_ptr()),
             static_cast<const uint32_t*>(A_exp.const_data_ptr()),
             static_cast<const vec<nv_bfloat162, 2>*>(X.const_data_ptr()),
-            static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
+            static_cast<float*>(Y.mutable_data_ptr()),
             static_cast<const uint32_t*>(offsets.const_data_ptr()),
             static_cast<const uint8_t*>(LUT1.const_data_ptr()),
             static_cast<const uint8_t*>(LUT2.const_data_ptr()),
