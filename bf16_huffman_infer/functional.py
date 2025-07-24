@@ -49,6 +49,7 @@ def mv_huffman(
     offsets: Tensor,
     LUT1: Tensor, LUT2: Tensor, LUT3: Tensor, LUT4: Tensor,
     code_lengths: Tensor,
+    reorder_indices: Tensor,
 ) -> Tensor:
     if A_rem.dim() == 2:
         A_rem = A_rem[None, :, :]
@@ -78,7 +79,7 @@ def mv_huffman(
     code_lengths = code_lengths.contiguous()
     
     Y = torch.zeros((X.size(0), M), dtype=torch.float32, device=A_rem.device)
-    gemv_bf16_huffman(A_rem, A_exp, X, Y, offsets, LUT1, LUT2, LUT3, LUT4, code_lengths)
+    gemv_bf16_huffman(A_rem, A_exp, X, Y, offsets, LUT1, LUT2, LUT3, LUT4, code_lengths, reorder_indices)
     return Y.to(torch.bfloat16)
 
 
@@ -117,6 +118,7 @@ class HuffmanWeight(nn.Module):
         LUT3: Tensor,
         LUT4: Tensor,
         code_lengths: Tensor,
+        reorder_indices: Tensor,
     ):
         super().__init__()
         self.rem = nn.Buffer(rem)
@@ -127,6 +129,7 @@ class HuffmanWeight(nn.Module):
         self.LUT3 = nn.Buffer(LUT3)
         self.LUT4 = nn.Buffer(LUT4)
         self.code_lengths = nn.Buffer(code_lengths)
+        self.reorder_indices = nn.Buffer(reorder_indices)
     
     def kwargs(self) -> dict[str, Tensor]:
         return dict(self.named_buffers())
@@ -184,6 +187,7 @@ class HuffmanWeight(nn.Module):
         xx_output_lengths = ((xx_output_lengths.view(x.size(0), x.size(1)).max(dim=-1, 
             keepdim=True).values.expand(-1, x.size(1)) + 4 - 1) // 4 * 4).view_as(xx_output_lengths)
         xx_output_lengths = xx_output_lengths.view(x.size(0), x.size(1))[:, 0] // 4 # [b]
+        xx_output_lengths, reorder_indices = xx_output_lengths.sort(descending=True)
         
         xx_output = xx_output.view(xx_output.size(0), -1, 8)
         xx_output -= ord('0')
@@ -195,7 +199,9 @@ class HuffmanWeight(nn.Module):
         
         xx_output = xx_output.view(torch.int32) # [b x g, maxn]
         xx_output = xx_output.view(x.size(0), x.size(1), -1).transpose(1, 2) # [b, maxn, g]
-        xx_output = xx_output[torch.arange(xx_output.size(1))[None, :].to(device) < xx_output_lengths[:, None]] # [b, maxn]
+        xx_output = xx_output[reorder_indices] # [b, maxn, g], b is reordered by the max length
+        # remove the common padding
+        xx_output = xx_output[torch.arange(xx_output.size(1))[None, :].to(device) < xx_output_lengths[:, None]] # [bn, g]
         xx_output = torch.cat([xx_output, torch.zeros(1, xx_output.size(1), dtype=torch.int32).to(device)], dim=0)
         
         compressed_cuda = xx_output.flatten().cpu()
@@ -207,6 +213,8 @@ class HuffmanWeight(nn.Module):
         
         compressed = compressed_cuda
         offsets = offsets_cuda
+
+        reorder_indices = reorder_indices[None, :].int().cpu()
         
         return HuffmanWeight(
             rem=rem.cpu(),
@@ -217,6 +225,7 @@ class HuffmanWeight(nn.Module):
             LUT3=torch.from_numpy(codec.LUT3),
             LUT4=torch.from_numpy(codec.LUT4),
             code_lengths=torch.from_numpy(codec.code_lengths),
+            reorder_indices=reorder_indices,
         )
     
     @staticmethod
@@ -236,6 +245,7 @@ class HuffmanWeight(nn.Module):
             v.append(sub_a)
         rem = torch.stack([sub_a.rem for sub_a in v], dim=0).cpu()
         exp = torch.cat([sub_a.exp for sub_a in v], dim=0).cpu()
+        reorder_indices = torch.stack([sub_a.reorder_indices for sub_a in v], dim=0).cpu()
         offsets = []
         count = 0
         for sub_a in v:
@@ -252,6 +262,7 @@ class HuffmanWeight(nn.Module):
             LUT3=torch.from_numpy(codec.LUT3),
             LUT4=torch.from_numpy(codec.LUT4),
             code_lengths=torch.from_numpy(codec.code_lengths),
+            reorder_indices=reorder_indices,
         )
     
     @staticmethod
@@ -334,6 +345,7 @@ def linear_huffman(input: Tensor, weight: HuffmanWeight, bias: Optional[Tensor] 
             weight.LUT1, weight.LUT2, weight.LUT3, weight.LUT4,
             weight.code_lengths,
             # torch.cat([weight.LUT1, weight.LUT2, weight.LUT3, weight.LUT4, weight.code_lengths]),
+            weight.reorder_indices,
         )
         if bias is not None:
             output += bias[None, :]

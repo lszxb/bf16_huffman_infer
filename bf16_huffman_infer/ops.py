@@ -12,10 +12,11 @@ def gemv_bf16_huffman(
     offsets: Tensor,
     LUT1: Tensor, LUT2: Tensor, LUT3: Tensor, LUT4: Tensor,
     code_lengths: Tensor,
+    reorder_indices: Tensor,
 ) -> None:
     torch.ops.bf16_huffman_infer.gemv_bf16_huffman.default(
         A_rem, A_exp, X, Y,
-        offsets, LUT1, LUT2, LUT3, LUT4, code_lengths
+        offsets, LUT1, LUT2, LUT3, LUT4, code_lengths, reorder_indices
     )
     
     

@@ -246,6 +246,7 @@ gemv_bf16_huffman_kernel(
     const uint32_t* offsets,
     const uint8_t* LUT1, const uint8_t* LUT2, const uint8_t* LUT3, const uint8_t* LUT4,
     const uint8_t* code_lengths,
+    const uint32_t* reorder_indices,
     int M, int N, int split_k
 ) {
     __shared__ LUT sh_LUT;
@@ -276,6 +277,7 @@ gemv_bf16_huffman_kernel(
     A_rem += M * N / sizeof(A_rem[0]) * k;
     X += N / (sizeof(X[0]) / sizeof(nv_bfloat16)) * k;
     offsets += M * k;
+    reorder_indices += M * k;
 
     int stride = N / 4;
 
@@ -381,7 +383,7 @@ gemv_bf16_huffman_kernel(
             for (int i = 0; i < OP_PER_LANE; i++) {
                 // Y[(warp_group_id * OP_PER_LANE) + i] = __float2bfloat16(y[b][i]);
                 // atomicAdd(&Y[(warp_group_id * OP_PER_LANE) + i], __float2bfloat16(y[b][i]));
-                atomicAdd(&Y[(warp_group_id * OP_PER_LANE) + i], y[b][i]);
+                atomicAdd(&Y[reorder_indices[(warp_group_id * OP_PER_LANE) + i]], y[b][i]);
             }
             Y += M;
         }
@@ -400,7 +402,8 @@ void gemv_bf16_huffman(
     const torch::Tensor &LUT2,
     const torch::Tensor &LUT3,
     const torch::Tensor &LUT4,
-    const torch::Tensor &code_lengths
+    const torch::Tensor &code_lengths,
+    const torch::Tensor &reorder_indices
 ) {
     int split_k = A_rem.size(0);
     int M = A_rem.size(1);
@@ -431,6 +434,7 @@ void gemv_bf16_huffman(
             static_cast<const uint8_t*>(LUT3.const_data_ptr()),
             static_cast<const uint8_t*>(LUT4.const_data_ptr()),
             static_cast<const uint8_t*>(code_lengths.const_data_ptr()),
+            static_cast<const uint32_t*>(reorder_indices.const_data_ptr()),
             M, N, split_k
         )
     );
