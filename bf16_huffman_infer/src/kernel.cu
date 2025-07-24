@@ -279,6 +279,12 @@ gemv_bf16_huffman_kernel(
     offsets += M * k;
     reorder_indices += M * k;
 
+    uint32_t reorder_idx[OP_PER_LANE];
+    #pragma unroll
+    for (int i = 0; i < OP_PER_LANE; i++) {
+        reorder_idx[i] = reorder_indices[(warp_group_id * OP_PER_LANE) + i];
+    }
+
     int stride = N / 4;
 
     // const vec<nv_bfloat162, 2> *px = &X[lane_id];
@@ -383,7 +389,7 @@ gemv_bf16_huffman_kernel(
             for (int i = 0; i < OP_PER_LANE; i++) {
                 // Y[(warp_group_id * OP_PER_LANE) + i] = __float2bfloat16(y[b][i]);
                 // atomicAdd(&Y[(warp_group_id * OP_PER_LANE) + i], __float2bfloat16(y[b][i]));
-                atomicAdd(&Y[reorder_indices[(warp_group_id * OP_PER_LANE) + i]], y[b][i]);
+                atomicAdd(&Y[reorder_idx[i]], y[b][i]);
             }
             Y += M;
         }

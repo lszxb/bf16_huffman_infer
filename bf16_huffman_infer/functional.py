@@ -188,6 +188,7 @@ class HuffmanWeight(nn.Module):
             keepdim=True).values.expand(-1, x.size(1)) + 4 - 1) // 4 * 4).view_as(xx_output_lengths)
         xx_output_lengths = xx_output_lengths.view(x.size(0), x.size(1))[:, 0] // 4 # [b]
         xx_output_lengths, reorder_indices = xx_output_lengths.sort(descending=True)
+        # reorder_indices = torch.arange(xx_output_lengths.size(0)).to(xx_output_lengths)
         
         xx_output = xx_output.view(xx_output.size(0), -1, 8)
         xx_output -= ord('0')
