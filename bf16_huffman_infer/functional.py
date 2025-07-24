@@ -210,11 +210,12 @@ class HuffmanWeight(nn.Module):
         )[:-1].cpu()
         
         rem = rem.view(rem.size(0), -1, 2, 32, 2).transpose(-3, -2).reshape_as(rem)
+        rem = rem[reorder_indices]
         
         compressed = compressed_cuda
         offsets = offsets_cuda
 
-        reorder_indices = reorder_indices[None, :].int().cpu()
+        reorder_indices = reorder_indices.int().cpu()
         
         return HuffmanWeight(
             rem=rem.cpu(),
