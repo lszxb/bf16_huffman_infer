@@ -469,8 +469,8 @@ __global__ void huffman_decode_kernel(
         int stride = N / 2;
 
         const uchar4 *par = (const uchar4 *)&A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
-        const uint32_t *pae = &A_exp[offsets[warp_group_id] + lane_id];
-        const uint32_t *pae2 = &A_exp[offsets[warp_group_id] + lane_id + 1];
+        const uint32_t *pae = &A_exp[offsets[warp_group_id] + lane_id / 2];
+        const uint32_t *pae2 = &A_exp[offsets[warp_group_id] + lane_id / 2 + warpSize];
 
         uchar4 ar[OP_PER_LANE];
         uchar4 ae[OP_PER_LANE];
@@ -513,8 +513,8 @@ __global__ void huffman_decode_kernel(
                     uint32_t _bits;
                     nv_bfloat162 u;
                 } bf161{((rem1 << 8) & 0x80008000) | (rem1 & 0x007F007F) | (exp1 << 7)};
-                Y[(warp_group_id * OP_PER_LANE + i) * N / 2 + count * warp_group_size + lane_id] = bf160.u;
-                Y[(warp_group_id * OP_PER_LANE + i) * N / 2 + count * warp_group_size + lane_id + 1] = bf161.u;
+                Y[(warp_group_id * OP_PER_LANE + i) * N / 2 + count * warp_group_size + lane_id / 2] = bf160.u;
+                Y[(warp_group_id * OP_PER_LANE + i) * N / 2 + count * warp_group_size + lane_id / 2 + warpSize] = bf161.u;
             }
         }
         
