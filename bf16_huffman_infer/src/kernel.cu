@@ -242,7 +242,7 @@ union vec {
 template <int batch_size>
 __global__ void
 gemv_bf16_huffman_kernel(
-    const uchar4* A_rem, const uint32_t* A_exp, const nv_bfloat162* X, float* Y,
+    const uchar4* A_rem, const uint32_t* A_exp, const nv_bfloat162* X, nv_bfloat16* Y,
     const uint32_t* offsets,
     const uint8_t* LUT1, const uint8_t* LUT2, const uint8_t* LUT3, const uint8_t* LUT4,
     const uint8_t* code_lengths,
@@ -256,22 +256,34 @@ gemv_bf16_huffman_kernel(
     ((uint64_t*)sh_LUT.LUT4)[threadIdx.x] = ((const uint64_t*)LUT4)[threadIdx.x];
     ((uint64_t*)sh_LUT.code_lengths)[threadIdx.x] = ((const uint64_t*)code_lengths)[threadIdx.x];
 
+    __shared__ struct {
+        float y[4][batch_size][OP_PER_LANE][32];
+        int count[4];
+    } tmp;
+
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+        tmp.count[threadIdx.z] = 0;
+    }
+    assert(blockDim.z <= 4);
+    assert(split_k <= 32);
+
     __syncthreads();
 
     assert(blockDim.x == warpSize);
 
-    int warp_group_id = blockIdx.x * blockDim.y + threadIdx.y;
+    int warp_group_id = blockIdx.x * blockDim.z + threadIdx.z;
     int lane_id = threadIdx.x;
     int thread_id = warp_group_id * blockDim.x + threadIdx.x;
 
-    if (warp_group_id * OP_PER_LANE >= M * split_k) {
+    if (warp_group_id * OP_PER_LANE >= M) {
         return; // no work to do
     }
 
     float y[batch_size][OP_PER_LANE] = {};
 
-    int k = warp_group_id / (M / OP_PER_LANE);
-    warp_group_id %= (M / OP_PER_LANE);
+    int k = threadIdx.y;
+    // int k = warp_group_id / (M / OP_PER_LANE);
+    // warp_group_id %= (M / OP_PER_LANE);
 
     A_rem += M * N / sizeof(A_rem[0]) * k;
     X += N / (sizeof(X[0]) / sizeof(nv_bfloat16)) * k;
@@ -381,11 +393,28 @@ gemv_bf16_huffman_kernel(
             for (int i = 0; i < OP_PER_LANE; i++) {
                 // Y[(warp_group_id * OP_PER_LANE) + i] = __float2bfloat16(y[b][i]);
                 // atomicAdd(&Y[(warp_group_id * OP_PER_LANE) + i], __float2bfloat16(y[b][i]));
-                atomicAdd(&Y[(warp_group_id * OP_PER_LANE) + i], y[b][i]);
+                // atomicAdd(&Y[(warp_group_id * OP_PER_LANE) + i], y[b][i]);
+                tmp.y[threadIdx.z][b][i][k] = y[b][i];
             }
-            Y += M;
+            // Y += M;
         }
-        Y -= M * batch_size; // reset Y pointer to the start of the batch
+        // Y -= M * batch_size; // reset Y pointer to the start of the batch
+
+        int res = atomicAdd_block(&tmp.count[threadIdx.z], 1);
+        if (res == split_k - 1) {
+            // last thread in the block, write back the results
+            #pragma unroll
+            for (int b = 0; b < batch_size; b++) {
+                #pragma unroll
+                for (int i = 0; i < OP_PER_LANE; i++) {
+                    float y = 0.0;
+                    for (int j = 0; j < split_k; j++) {
+                        y += tmp.y[threadIdx.z][b][i][j];
+                    }
+                    Y[(warp_group_id * OP_PER_LANE) + i] = __float2bfloat16(y);
+                }
+            }
+        }
     }
 }
 
@@ -409,9 +438,10 @@ void gemv_bf16_huffman(
     cudaDeviceProp attr;
     TORCH_CHECK(cudaGetDeviceProperties(&attr, A_rem.device().index()) == cudaSuccess);
     int num_warps_per_block = attr.maxThreadsPerMultiProcessor / 32 / attr.maxBlocksPerMultiProcessor;
+    num_warps_per_block = ceil_div(num_warps_per_block, split_k);
 
-    auto block_size = dim3(32, num_warps_per_block, 1);
-    auto grid_size = dim3(ceil_div(M * split_k, OP_PER_LANE * num_warps_per_block), 1, 1);
+    auto block_size = dim3(32, split_k, num_warps_per_block);
+    auto grid_size = dim3(ceil_div(M, OP_PER_LANE * num_warps_per_block), 1, 1);
 
     auto stream = c10::cuda::getCurrentCUDAStream(A_rem.device().index()).stream();
 
@@ -424,7 +454,7 @@ void gemv_bf16_huffman(
             static_cast<const uchar4*>(A_rem.const_data_ptr()),
             static_cast<const uint32_t*>(A_exp.const_data_ptr()),
             static_cast<const nv_bfloat162*>(X.const_data_ptr()),
-            static_cast<float*>(Y.mutable_data_ptr()),
+            static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
             static_cast<const uint32_t*>(offsets.const_data_ptr()),
             static_cast<const uint8_t*>(LUT1.const_data_ptr()),
             static_cast<const uint8_t*>(LUT2.const_data_ptr()),

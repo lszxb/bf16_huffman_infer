@@ -77,9 +77,9 @@ def mv_huffman(
     LUT4 = LUT4.contiguous()
     code_lengths = code_lengths.contiguous()
     
-    Y = torch.zeros((X.size(0), M), dtype=torch.float32, device=A_rem.device)
+    Y = torch.empty((X.size(0), M), dtype=torch.bfloat16, device=A_rem.device)
     gemv_bf16_huffman(A_rem, A_exp, X, Y, offsets, LUT1, LUT2, LUT3, LUT4, code_lengths)
-    return Y.to(torch.bfloat16)
+    return Y
 
 
 def linear(input: Tensor, weight: Tensor, bias: Optional[Tensor] = None) -> Tensor:
