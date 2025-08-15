@@ -415,7 +415,9 @@ gemv_bf16_huffman_kernel(
                     }
                     Y[(warp_group_id * OP_PER_LANE) + i] = __float2bfloat16(y);
                 }
+                Y += M;
             }
+            Y -= M * batch_size; // reset Y pointer to the start of the batch
         }
     }
 }
