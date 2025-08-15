@@ -16,6 +16,8 @@
 
 
 #define OP_PER_LANE 1
+#define MAX_WARP_BLOCK_RATIO 4
+#define MAX_SPLIT_K 32
 
 namespace bf16_huffman_infer {
 
@@ -257,15 +259,15 @@ gemv_bf16_huffman_kernel(
     ((uint64_t*)sh_LUT.code_lengths)[threadIdx.x] = ((const uint64_t*)code_lengths)[threadIdx.x];
 
     __shared__ struct {
-        float y[4][batch_size][OP_PER_LANE][32];
-        int count[4];
+        float y[MAX_WARP_BLOCK_RATIO][batch_size][OP_PER_LANE][MAX_SPLIT_K];
+        int count[MAX_WARP_BLOCK_RATIO];
     } tmp;
 
     if (threadIdx.x == 0 && threadIdx.y == 0) {
         tmp.count[threadIdx.z] = 0;
     }
-    assert(blockDim.z <= 4);
-    assert(split_k <= 32);
+    assert(blockDim.z <= MAX_WARP_BLOCK_RATIO);
+    assert(split_k <= MAX_SPLIT_K);
 
     __syncthreads();
 
