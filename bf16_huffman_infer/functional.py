@@ -232,7 +232,31 @@ class HuffmanWeight(nn.Module):
         a = a.view(ori_size[0], n, -1).transpose(0, 1).contiguous()
         v = []
         for i in range(a.size(0)):
-            sub_a = HuffmanWeight.compress_part(a[i], codec)
+            # split the compress task into blocks to avoid OOM
+            compress_bs = 4096
+            split_m = (a.size(1) + compress_bs - 1) // compress_bs
+            ss_a = [
+                HuffmanWeight.compress_part(a[i][j*compress_bs:(j+1)*compress_bs], codec)
+                for j in range(split_m)
+            ]
+            rem = torch.cat([x.rem for x in ss_a], dim=0)
+            exp = torch.cat([x.exp for x in ss_a], dim=0)
+            offsets = []
+            count = 0
+            for x in ss_a:
+                offsets.append(x.offsets + count)
+                count += x.exp.nelement()
+            offsets = torch.cat(offsets)
+            sub_a = HuffmanWeight(
+                rem=rem,
+                exp=exp,
+                offsets=offsets,
+                LUT1=torch.from_numpy(codec.LUT1),
+                LUT2=torch.from_numpy(codec.LUT2),
+                LUT3=torch.from_numpy(codec.LUT3),
+                LUT4=torch.from_numpy(codec.LUT4),
+                code_lengths=torch.from_numpy(codec.code_lengths),
+            )
             v.append(sub_a)
         rem = torch.stack([sub_a.rem for sub_a in v], dim=0).cpu()
         exp = torch.cat([sub_a.exp for sub_a in v], dim=0).cpu()
