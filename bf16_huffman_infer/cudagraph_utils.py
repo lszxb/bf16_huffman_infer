@@ -5,6 +5,8 @@ from transformers import PreTrainedModel, StaticCache, PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 import copy
 
+from .utils import shallow_copy_model
+
 
 def apply_graphed(model: PreTrainedModel, cache: StaticCache, replace_generate=True):
     _old_forward = model.forward
@@ -76,15 +78,6 @@ def apply_graphed(model: PreTrainedModel, cache: StaticCache, replace_generate=T
         model.generate = lambda *args, **kwargs: cache.reset() or _old_generate(
             *args, past_key_values=cache, disable_compile=True, **kwargs,
         )
-
-
-def shallow_copy_model(model: nn.Module) -> nn.Module:
-    memo = {}
-    for p in model.parameters():
-        memo[id(p)] = p
-    for b in model.buffers():
-        memo[id(b)] = b
-    return copy.deepcopy(model, memo=memo)
 
 
 def get_graphed_model(model: PreTrainedModel, cache: StaticCache) -> PreTrainedModel:

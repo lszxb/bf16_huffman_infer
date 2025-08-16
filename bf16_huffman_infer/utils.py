@@ -1,3 +1,4 @@
+import copy
 from typing import Optional
 import torch
 from torch import Tensor, nn
@@ -43,4 +44,13 @@ def print_stats(ori: Tensor, new: nn.Module):
     print(f'new size = {new_size / 1024 ** 2:.2f}MiB')
     print(f'compression ratio = {new_size / ori_size:.2%}')
     print(f'bits = {new_size / ori_size * 16:.2f}')
+
+
+def shallow_copy_model(model: nn.Module) -> nn.Module:
+    memo = {}
+    for p in model.parameters():
+        memo[id(p)] = p
+    for b in model.buffers():
+        memo[id(b)] = b
+    return copy.deepcopy(model, memo=memo)
 
