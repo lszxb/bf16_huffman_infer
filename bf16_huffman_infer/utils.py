@@ -14,12 +14,11 @@ def split_bf16(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 def get_block_size_n(x: torch.Tensor) -> Optional[tuple[int, int]]:
     n = x.size(1)
     
-    for b in range(12, 7, -1):
-        power_of_2 = 2 ** b
-        
-        if n % power_of_2 == 0:
-            split_n = n // power_of_2
-            return (split_n, power_of_2)
+    if n % 128 == 0:
+        n //= 128
+        for i in range(4096 // 128, 2, -1):
+            if n % i == 0:
+                return (n // i, )
     
     # return None
     raise RuntimeError(f"Could not find suitable block size for shape {x.shape}")
