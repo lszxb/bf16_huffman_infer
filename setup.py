@@ -7,6 +7,9 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 pkg_name = 'bf16_huffman_infer'
 
 
+os.environ.setdefault('TORCH_CUDA_ARCH_LIST', '7.5+PTX')
+
+
 library_dirs = []
 
 if platform.system() == 'Windows':
@@ -31,7 +34,7 @@ setup(
             ],
             extra_compile_args = {
                 'cxx':  ['-std=c++17', '-O2', '-DPy_LIMITED_API=0x03090000'],
-                'nvcc': ['-std=c++17', '-arch=sm_75', '-O3', '--use_fast_math', 
+                'nvcc': ['-std=c++17', '-O3', '--use_fast_math', 
                          '-lineinfo', '--ptxas-options=-v --warn-on-spills'],
             },
             library_dirs=library_dirs,
