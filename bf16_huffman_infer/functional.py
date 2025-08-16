@@ -298,8 +298,8 @@ def convert(linear: nn.Linear, name) -> HuffmanLinear:
     if ratio >= 1:
         print(f'\nWarning! {name} ratio = {ratio:.2%}')
         fallback = True
-    if not (y1 == y2).all():
-    # if max_rtol >= 0.02: # This is a workaround for now, needs a identical gemv kernel in the future
+    # if not (y1 == y2).all():
+    if max_rtol >= 0.02: # the kernel the no longer deterministic after adding split_k block reduce
         print(f'\nWarning! {name} output mismatch: max rtol = {max_rtol:.2f}')
         fallback = True
     
