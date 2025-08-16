@@ -1,5 +1,6 @@
 import torch
 from torch import nn, Tensor
+from transformers import PreTrainedModel
 from .utils import shallow_copy_model
 
 
@@ -46,12 +47,12 @@ def parallelize_qkv(self_attn):
     self_attn.v_proj.register_forward_hook(v_post_hook)
 
 
-def parallelize_qkv_model(model: nn.Module):
+def parallelize_qkv_model(model: PreTrainedModel):
     for layer in model.model.layers:
         parallelize_qkv(layer.self_attn)
 
 
-def get_parallelize_qkv_model(model: nn.Module) -> nn.Module:
+def get_parallelize_qkv_model(model: PreTrainedModel) -> PreTrainedModel:
     new_model = shallow_copy_model(model)
     parallelize_qkv_model(new_model)
     return new_model
