@@ -27,6 +27,18 @@ setup(
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     url='https://github.com/lszxb/bf16_huffman_infer',
+    license='MIT',
+    classifiers=[
+        'License :: OSI Approved :: MIT License',
+        'Development Status :: 3 - Alpha',
+        'Intended Audience :: Developers',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
+        'Topic :: Scientific/Engineering :: Artificial Intelligence',
+    ],
     include_dirs=[],
     packages=find_packages(include=[
         pkg_name, f'{pkg_name}.*'
