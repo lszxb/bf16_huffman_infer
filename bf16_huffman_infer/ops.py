@@ -2,10 +2,6 @@ import torch
 from torch import Tensor
 from . import _C
 
-
-def gemv_bf16(A: Tensor, X: Tensor, Y: Tensor) -> None:
-    torch.ops.bf16_huffman_infer.gemv_bf16.default(A, X, Y)
-
     
 def gemv_bf16_huffman(
     A_rem: Tensor, A_exp: Tensor, X: Tensor, Y: Tensor,
