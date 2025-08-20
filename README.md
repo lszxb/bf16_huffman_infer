@@ -1,6 +1,6 @@
 # bf16_huffman_infer
 
-This is a experimental implementation of fused Decompression-GEMV kernel, using the LUT-based Huffman compression purposed by [DFloat11](https://github.com/LeanModels/DFloat11), to compress the exponential bits of the BF16 format. It provides reduced memory usage of the LLMs, while maintaining comparable decoding speed.
+This is a experimental implementation of fused Decompression-GEMV kernel, using the LUT-based Huffman compression purposed by [DFloat11](https://github.com/LeanModels/DFloat11), to compress the exponential bits of the BF16 format. It provides reduced memory usage of the LLMs, while maintaining comparable decoding speed to the regular BF16 format.
 
 The current fused kernel implementation only support `batch_size<=8`, otherwise it will fallback to the non-fused decompression then GEMM implementation. Due to the optimized data layout, it can achieve about 80%~90% decoding speed of the original model, while reducing the VRAM usage by ~25%. The compression ratio is slightly higher than the original DFloat11, but the decoding speed is much faster. On some bandwidth-limited GPUs, like RTX-4060ti, it can even achieve better decoding speed than the original BF16 model.
 
