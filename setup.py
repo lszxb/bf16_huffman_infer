@@ -21,6 +21,12 @@ if platform.system() == 'Windows':
 
 setup(
     name=pkg_name,
+    version='0.0.1',
+    author='lszxb',
+    description='Fused BF16 Huffman GEMV Inference kernel',
+    long_description=open('README.md', encoding='utf-8').read(),
+    long_description_content_type='text/markdown',
+    url='https://github.com/lszxb/bf16_huffman_infer',
     include_dirs=[],
     packages=find_packages(include=[
         pkg_name, f'{pkg_name}.*'

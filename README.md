@@ -5,6 +5,19 @@ This is a experimental implementation of fused Decompression-GEMV kernel, using 
 The current fused kernel implementation only support `batch_size<=8`, otherwise it will fallback to the non-fused decompression then GEMM implementation. Due to the optimized data layout, it can achieve about 80%~90% decoding speed of the original model, while reducing the VRAM usage by ~25%. The compression ratio is slightly higher than the original DFloat11, but the decoding speed is much faster. On some bandwidth-limited GPUs, like RTX-4060ti, it can even achieve better decoding speed than the original BF16 model.
 
 
+## Installation
+
+```bash
+pip install bf16_huffman_infer
+```
+
+
+## Requirements
+- Python 3.9+
+- PyTorch 2.7+
+- Nvidia Turing or newer GPU
+
+
 ## Usage
 
 ```python
