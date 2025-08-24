@@ -18,7 +18,13 @@ def get_block_size_n(x: torch.Tensor) -> Optional[tuple[int, int]]:
     if n % 128 == 0:
         n //= 128
         for i in range(4096 // 128, 2, -1):
-            if n % i == 0:
+            if n % i == 0 and n // i <= 8:
+                return (n // i, )
+        for i in range(4096 // 128, 16384 // 128 + 1):
+            if n % i == 0 and n // i <= 32:
+                return (n // i, )
+        for i in range(4096 // 128, 2, -1):
+            if n % i == 0 and n // i <= 32:
                 return (n // i, )
     
     # return None
