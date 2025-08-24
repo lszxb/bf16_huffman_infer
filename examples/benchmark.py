@@ -1,6 +1,7 @@
 from time import monotonic
 import torch
 from bf16_huffman_infer.cudagraph_utils import get_graphed_model
+from bf16_huffman_infer.cudastream_utils import get_parallelize_qkv_model
 from bf16_huffman_infer.utils import get_model_size
 from bf16_huffman_infer.functional import convert_all_linear
 from transformers import (
@@ -31,7 +32,7 @@ def main():
 
     # Native BF16 inference
     model.cuda()
-    graphed_model = get_graphed_model(model, cache)
+    graphed_model = get_graphed_model(get_parallelize_qkv_model(model), cache)
 
     for _ in range(3):
         start = monotonic()
@@ -47,7 +48,7 @@ def main():
 
 
     # Perform BF16 Huffman compression
-    convert_all_linear(model.model, min_out_features=0)
+    convert_all_linear(model, min_out_features=0)
     new_size = get_model_size(model)
     overall_compression_ratio = new_size / ori_size
     print(f'ori_size = {ori_size / 1024 ** 3:.2f}GiB')
@@ -57,7 +58,7 @@ def main():
 
     # Compressed BF16 inference
     model.cuda()
-    graphed_model = get_graphed_model(model, cache)
+    graphed_model = get_graphed_model(get_parallelize_qkv_model(model), cache)
 
     for _ in range(3):
         start = monotonic()
