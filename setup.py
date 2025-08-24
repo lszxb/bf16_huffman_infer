@@ -51,7 +51,7 @@ setup(
         "build_ext": BuildExtension
     },
     options={"bdist_wheel": {"py_limited_api": "cp39"}},
-    requires=[
+    install_requires=[
         'torch',
         'transformers',
     ],
