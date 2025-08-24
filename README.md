@@ -5,6 +5,18 @@ This is a experimental implementation of fused Decompression-GEMV kernel, using 
 The current fused kernel implementation only support `batch_size<=8`, otherwise it will fallback to the non-fused decompression then GEMM implementation. Due to the optimized data layout, it can achieve about 80%~90% decoding speed of the original model, while reducing the VRAM usage by ~25%. The compression ratio is slightly higher than the original DFloat11, but the decoding speed is much faster. On some bandwidth-limited GPUs, like RTX-4060ti, it can even achieve better decoding speed than the original BF16 model.
 
 
+## Benchmark Results
+
+The following is the time used to generate 256 tokens with batch size 1 on different GPUs, using the script `examples/benchmark.py`. Please note that the CUDA Graph is used during the benchmark to minimize the CPU kernel launch overhead.
+
+| Model      | Device     | Raw BF16 Time | Compressed BF16 Time | Raw / Compressed Size |
+| ---------- | ---------- | ------------- | -------------------- | --------------------- |
+| Qwen2.5 7B | RTX 4060Ti | 14.98s        | 13.02s               | 14.19 / 10.99 GiB     |
+|            | RTX A6000  | 6.66s         | 7.23s                |                       |
+| Qwen3 8B   | RTX 4060Ti | OOM           | 14.11s               | 15.26 / 11.52 GiB     |
+|            | RTX A6000  | 7.75s         | 8.24s                |                       |
+
+
 ## Installation
 
 You can directly install the package from pypi, which will compile the custom CUDA extension during installation.
