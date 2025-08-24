@@ -21,7 +21,7 @@ if platform.system() == 'Windows':
 
 setup(
     name=pkg_name,
-    version='0.0.1',
+    version='0.0.2',
     author='lszxb',
     description='Fused BF16 Huffman GEMV Inference kernel',
     long_description=open('README.md', encoding='utf-8').read(),
