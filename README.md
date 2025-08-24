@@ -30,6 +30,11 @@ cd bf16_huffman_infer
 pip install --no-build-isolation -e .
 ```
 
+For Windows users, a prebuilt wheel for PyTorch 2.8 is provided in the Github Releases.
+```bash
+pip install https://github.com/lszxb/bf16_huffman_infer/releases/download/v0.0.2/bf16_huffman_infer-0.0.2+torch2.8-cp39-abi3-win_amd64.whl
+```
+
 
 ## Requirements
 - Python 3.9+
