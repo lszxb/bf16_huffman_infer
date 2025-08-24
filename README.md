@@ -9,13 +9,13 @@ The current fused kernel implementation only support `batch_size<=8`, otherwise 
 
 You can directly install the package from pypi, which will compile the custom CUDA extension during installation.
 ```bash
-pip install bf16_huffman_infer
+pip install --no-build-isolation bf16_huffman_infer
 ```
 or you can also clone the repo and install it manually:
 ```bash
 git clone https://github.com/lszxb/bf16_huffman_infer.git
 cd bf16_huffman_infer
-pip install --use-pep517 --no-build-isolation --config-settings editable_mode=compat -e .
+pip install --no-build-isolation -e .
 ```
 
 
