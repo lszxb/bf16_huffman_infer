@@ -120,8 +120,7 @@ class HuffmanWeight(nn.Module):
         
         x = exp
         x = x.view(rem.shape)
-        x = x.reshape(-1, OP_PER_LANE, x.size(-1))
-        x = x.reshape(x.size(0), x.size(1), -1, 64, 2).transpose(1, 3).flatten(2, 4)
+        x = x.reshape(x.size(0) // OP_PER_LANE, OP_PER_LANE, -1, 64, 2).transpose(1, 3).flatten(2, 4)
         
         xx = x.flatten(0, 1)
         xx_output = torch.zeros(xx.size(0), xx.size(1) * 32, dtype=torch.uint8, device=device)
