@@ -10,7 +10,7 @@ from .ans import RANSEncoder
 
 from .utils import get_block_size_n, split_bf16
 
-from .ops import ans_encode, gemv_bf16_huffman, huffman_decode, huffman_encode
+from .ops import ans_decode, ans_encode, gemv_bf16_ans, gemv_bf16_huffman, huffman_decode, huffman_encode
 
 OP_PER_LANE = 1
 
@@ -257,25 +257,23 @@ class ANSWeight(HuffmanWeight):
     
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
-        # if kwargs is None:
-        #     kwargs = {}
-        # if func is not F.linear:
-        #     return NotImplemented
-        # return linear_huffman(*args, **kwargs)
-        raise NotImplementedError()
+        if kwargs is None:
+            kwargs = {}
+        if func is not F.linear:
+            return NotImplemented
+        return linear_ans(*args, **kwargs)
     
     def get_weight(self) -> Tensor:
-        # weight = torch.empty_like(self.rem, dtype=torch.bfloat16)
-        # assert weight.device == self.rem.device
-        # assert weight.device.type == 'cuda'
-        # huffman_decode(
-        #     self.rem, self.exp, weight,
-        #     self.offsets, self.LUT1, self.LUT2, self.LUT3, self.LUT4, self.code_lengths
-        # )
-        # weight.transpose_(0, 1)
-        # weight = weight.flatten(1, 2)
-        # return weight
-        raise NotImplementedError()
+        weight = torch.empty_like(self.rem, dtype=torch.bfloat16)
+        assert weight.device == self.rem.device
+        assert weight.device.type == 'cuda'
+        ans_decode(
+            self.rem, self.exp, weight,
+            self.offsets, self.LUT
+        )
+        weight.transpose_(0, 1)
+        weight = weight.flatten(1, 2)
+        return weight
     
     @classmethod
     def get_codec(cls, a: torch.Tensor) -> RANSEncoder:
@@ -387,3 +385,59 @@ def linear_huffman(input: Tensor, weight: HuffmanWeight, bias: Optional[Tensor] 
     output = output.unflatten(0, shape[:-1])
     
     return output
+
+
+def mv_ans(
+    A_rem: Tensor, A_exp: Tensor, X: Tensor,
+    offsets: Tensor,
+    LUT: Tensor,
+) -> Tensor:
+    if A_rem.dim() == 2:
+        A_rem = A_rem[None, :, :]
+    if offsets.dim() == 2:
+        offsets = offsets[None, :]
+    
+    split_k, M, N = A_rem.shape
+    
+    X = X.view(-1, split_k, N)
+    
+    assert M % 128 == 0
+    assert N % 128 == 0
+    assert len(X.shape) == 3
+    assert X.size(-1) == N
+    assert X.dtype == torch.bfloat16
+    assert A_rem.device.type == A_exp.device.type == X.device.type == 'cuda'
+    assert A_rem.device == A_exp.device == X.device
+    
+    A_rem = A_rem.contiguous()
+    A_exp = A_exp.contiguous()
+    X = X.contiguous()
+    offsets = offsets.contiguous()
+    LUT = LUT.contiguous()
+    
+    Y = torch.empty((X.size(0), M), dtype=torch.bfloat16, device=A_rem.device)
+    gemv_bf16_ans(A_rem, A_exp, X, Y, offsets, LUT)
+    return Y
+
+
+def linear_ans(input: Tensor, weight: ANSWeight, bias: Optional[Tensor] = None) -> Tensor:
+    assert input.dim() >= 2, input
+    shape = input.shape
+    input = input.flatten(0, -2)
+    # assert input.size(0) == 1
+    if input.size(0) <= 8:
+        output = mv_ans(
+            weight.rem, weight.exp, input,
+            weight.offsets,
+            weight.LUT,
+        )
+        if bias is not None:
+            output += bias[None, :]
+    else:
+        weight = weight.get_weight()
+        output = F.linear(input, weight, bias)
+    
+    output = output.unflatten(0, shape[:-1])
+    
+    return output
+
