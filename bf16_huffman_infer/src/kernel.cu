@@ -213,6 +213,32 @@ struct decoder{
 };
 
 
+struct LUT_ans {
+    uint16_t rem;
+    uint16_t freq: 12, sym: 4; 
+};
+
+
+struct ans_decoder{
+    uint64_t state = 0;
+
+    __device__ __inline__ uint8_t decode_symbol(
+        const uint32_t* &pae, int warp_group_size, const LUT_ans *lut
+    ) {
+        if (state < (1 << 12)) {
+            state = (state << 32) | (*pae);
+            pae += warp_group_size;
+        }
+
+        uint32_t slot = state & 0xfff;
+        auto res = lut[slot];
+        state = res.freq * (state >> 12) + res.rem;
+
+        return res.sym;
+    }
+};
+
+
 template <int width> struct vector_type {};
 template <> struct vector_type<1> { using type = uint1; };
 template <> struct vector_type<2> { using type = uint2; };
@@ -643,6 +669,73 @@ void huffman_encode(
         num_data,
         static_cast<const char*>(LUT.const_data_ptr()),
         static_cast<char*>(output.mutable_data_ptr()),
+        static_cast<uint32_t*>(output_lengths.mutable_data_ptr())
+    );
+}
+
+
+__global__ void ans_encode_kernel(
+    const uint8_t *data,
+    uint32_t data_length,
+    int num_data,
+    const uint32_t* freq,
+    const uint32_t* cum,
+    uint32_t *output,
+    uint32_t output_lengths[]
+) {
+    int thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+    if (thread_id >= num_data) return;
+    
+    uint64_t state = 1 << 12;
+    uint32_t output_count = 0;
+    for (int i = 0; i < data_length; i++) {
+        auto sym = data[thread_id * data_length + data_length - i - 1];
+        auto f = freq[sym];
+        auto start = cum[sym];
+
+        while ((state >> 32) >= f) {
+            output[thread_id * data_length * 32 + output_count] = (uint32_t)state;
+            output_count++;
+            state >>= 32;
+        }
+
+        auto quotient = state / f;
+        auto remainder = state % f;
+
+        state = (quotient << 12) + remainder + start;
+    }
+
+    output[thread_id * data_length * 32 + output_count] = (uint32_t)state;
+    output_count++;
+    state >>= 32;
+
+    output[thread_id * data_length * 32 + output_count] = (uint32_t)state;
+    output_count++;
+    state >>= 32;
+
+    output_lengths[thread_id] = output_count;
+}
+
+
+void ans_encode(
+    const torch::Tensor &data,
+    const torch::Tensor &freq,
+    const torch::Tensor &cum,
+    torch::Tensor &output,
+    torch::Tensor &output_lengths
+) { 
+    int num_data = data.size(0);
+    int data_lengths = data.size(1);
+    int block_size = 32;
+    int grid_size = ceil_div(num_data, block_size);
+    auto stream = c10::cuda::getCurrentCUDAStream(data.device().index()).stream();
+    ans_encode_kernel<<<grid_size, block_size, 0, stream>>>(
+        static_cast<const uint8_t*>(data.const_data_ptr()),
+        data_lengths,
+        num_data,
+        static_cast<const uint32_t*>(freq.const_data_ptr()),
+        static_cast<const uint32_t*>(cum.const_data_ptr()),
+        static_cast<uint32_t*>(output.mutable_data_ptr()),
         static_cast<uint32_t*>(output_lengths.mutable_data_ptr())
     );
 }

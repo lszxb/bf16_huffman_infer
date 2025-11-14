@@ -32,3 +32,8 @@ def huffman_decode(
         offsets, LUT1, LUT2, LUT3, LUT4, code_lengths
     )
 
+def ans_encode(
+    data: Tensor, freq: Tensor, cum: Tensor, output: Tensor, output_lengths: Tensor
+) -> None:
+    torch.ops.bf16_huffman_infer.ans_encode.default(data, freq, cum, output, output_lengths)
+

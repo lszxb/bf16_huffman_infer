@@ -6,10 +6,11 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from .huffman import LUTHuffmanEncoder
+from .ans import RANSEncoder
 
 from .utils import get_block_size_n, split_bf16
 
-from .ops import gemv_bf16_huffman, huffman_decode, huffman_encode
+from .ops import ans_encode, gemv_bf16_huffman, huffman_decode, huffman_encode
 
 OP_PER_LANE = 1
 
@@ -105,24 +106,30 @@ class HuffmanWeight(nn.Module):
         weight = weight.flatten(1, 2)
         return weight
     
-    @staticmethod
-    def compress_part(a: torch.Tensor, codec=None) -> 'HuffmanWeight':
-        assert a.size(1) % 128 == 0, a.shape
-        
+    @classmethod
+    def get_codec(cls, a: torch.Tensor) -> LUTHuffmanEncoder:
         device = torch.device('cuda', 0)
+        _, exp = split_bf16(a.to(device))
+        bincount = torch.bincount(exp.flatten(), minlength=256).to(torch.int64)
+        codec = LUTHuffmanEncoder()
+        codec.build_lut(bincount.cpu())
+        return codec
+    
+    @classmethod
+    def get_lut_kwargs(cls, codec: LUTHuffmanEncoder) -> dict[str, Tensor]:
+        return {
+            'LUT1': torch.from_numpy(codec.LUT1),
+            'LUT2': torch.from_numpy(codec.LUT2),
+            'LUT3': torch.from_numpy(codec.LUT3),
+            'LUT4': torch.from_numpy(codec.LUT4),
+            'code_lengths': torch.from_numpy(codec.code_lengths),
+        }
+    
+    @classmethod
+    def compress_groups(cls, x: Tensor, codec: LUTHuffmanEncoder) -> tuple[Tensor, Tensor]:
+        device = x.device
         
-        rem, exp = split_bf16(a.to(device))
-        
-        if codec is None:
-            bincount = torch.bincount(exp.flatten(), minlength=256).to(torch.int64)
-            codec = LUTHuffmanEncoder()
-            codec.build_lut(bincount.cpu())
-        
-        x = exp
-        x = x.view(rem.shape)
-        x = x.reshape(x.size(0) // OP_PER_LANE, OP_PER_LANE, -1, 64, 2).transpose(1, 3).flatten(2, 4)
-        
-        xx = x.flatten(0, 1)
+        xx = x.flatten(0, 1) # [b x g, n]
         xx_output = torch.zeros(xx.size(0), xx.size(1) * 32, dtype=torch.uint8, device=device)
         xx_output.fill_(ord('0'))
         xx_output_lengths = torch.zeros(xx.size(0), dtype=torch.int32, device=device)
@@ -147,6 +154,23 @@ class HuffmanWeight(nn.Module):
         # [b x g, nj * 4]
         
         xx_output = xx_output.view(torch.int32) # [b x g, maxn]
+        
+        return xx_output, xx_output_lengths
+    
+    @classmethod
+    def compress_part(cls, a: torch.Tensor, codec: LUTHuffmanEncoder) -> dict[str, Tensor]:
+        assert a.size(1) % 128 == 0, a.shape
+        
+        device = torch.device('cuda', 0)
+        
+        rem, exp = split_bf16(a.to(device))
+        
+        x = exp
+        x = x.view(rem.shape)
+        x = x.reshape(x.size(0) // OP_PER_LANE, OP_PER_LANE, -1, 64, 2).transpose(1, 3).flatten(2, 4)
+        
+        xx_output, xx_output_lengths = cls.compress_groups(x, codec)
+
         xx_output = xx_output.view(x.size(0), x.size(1), -1).transpose(1, 2) # [b, maxn, g]
         xx_output = xx_output[torch.arange(xx_output.size(1))[None, :].to(device) < xx_output_lengths[:, None]] # [b, maxn]
         xx_output = torch.cat([xx_output, torch.zeros(1, xx_output.size(1), dtype=torch.int32).to(device)], dim=0)
@@ -161,26 +185,16 @@ class HuffmanWeight(nn.Module):
         compressed = compressed_cuda
         offsets = offsets_cuda
         
-        return HuffmanWeight(
-            rem=rem.cpu(),
-            exp=compressed,
-            offsets=offsets,
-            LUT1=torch.from_numpy(codec.LUT1),
-            LUT2=torch.from_numpy(codec.LUT2),
-            LUT3=torch.from_numpy(codec.LUT3),
-            LUT4=torch.from_numpy(codec.LUT4),
-            code_lengths=torch.from_numpy(codec.code_lengths),
-        )
+        return {
+            'rem': rem,
+            'exp': compressed,
+            'offsets': offsets,
+        }
     
-    @staticmethod
-    def compress_split_n(a: torch.Tensor, n=2) -> 'HuffmanWeight':
-        device = torch.device('cuda', 0)
+    @classmethod
+    def compress_split_n(cls: type['HuffmanWeight'], a: torch.Tensor, n=2) -> 'HuffmanWeight':
         ori_size = a.shape
-        rem, exp = split_bf16(a.to(device))
-        
-        bincount = torch.bincount(exp.flatten(), minlength=256).to(torch.int64)
-        codec = LUTHuffmanEncoder()
-        codec.build_lut(bincount.cpu())
+        codec = cls.get_codec(a)
         
         a = a.view(ori_size[0], n, -1).transpose(0, 1).contiguous()
         v = []
@@ -189,51 +203,104 @@ class HuffmanWeight(nn.Module):
             compress_bs = 4096
             split_m = (a.size(1) + compress_bs - 1) // compress_bs
             ss_a = [
-                HuffmanWeight.compress_part(a[i][j*compress_bs:(j+1)*compress_bs], codec)
+                cls.compress_part(a[i][j*compress_bs:(j+1)*compress_bs], codec)
                 for j in range(split_m)
             ]
-            rem = torch.cat([x.rem for x in ss_a], dim=0)
-            exp = torch.cat([x.exp for x in ss_a], dim=0)
+            rem = torch.cat([x['rem'] for x in ss_a], dim=0)
+            exp = torch.cat([x['exp'] for x in ss_a], dim=0)
             offsets = []
             count = 0
             for x in ss_a:
-                offsets.append(x.offsets + count)
-                count += x.exp.nelement()
+                offsets.append(x['offsets'] + count)
+                count += x['exp'].nelement()
             offsets = torch.cat(offsets)
-            sub_a = HuffmanWeight(
-                rem=rem,
-                exp=exp,
-                offsets=offsets,
-                LUT1=torch.from_numpy(codec.LUT1),
-                LUT2=torch.from_numpy(codec.LUT2),
-                LUT3=torch.from_numpy(codec.LUT3),
-                LUT4=torch.from_numpy(codec.LUT4),
-                code_lengths=torch.from_numpy(codec.code_lengths),
-            )
+            sub_a = {
+                'rem': rem,
+                'exp': exp,
+                'offsets': offsets,
+            }
             v.append(sub_a)
-        rem = torch.stack([sub_a.rem for sub_a in v], dim=0).cpu()
-        exp = torch.cat([sub_a.exp for sub_a in v], dim=0).cpu()
+        rem = torch.stack([sub_a['rem'] for sub_a in v], dim=0).cpu()
+        exp = torch.cat([sub_a['exp'] for sub_a in v], dim=0).cpu()
         offsets = []
         count = 0
         for sub_a in v:
-            offsets.append(sub_a.offsets + count)
-            count += sub_a.exp.nelement()
+            offsets.append(sub_a['offsets'] + count)
+            count += sub_a['exp'].nelement()
         offsets = torch.stack(offsets).cpu()
         
-        return HuffmanWeight(
+        return cls(
             rem=rem,
             exp=exp,
             offsets=offsets,
-            LUT1=torch.from_numpy(codec.LUT1),
-            LUT2=torch.from_numpy(codec.LUT2),
-            LUT3=torch.from_numpy(codec.LUT3),
-            LUT4=torch.from_numpy(codec.LUT4),
-            code_lengths=torch.from_numpy(codec.code_lengths),
+            **cls.get_lut_kwargs(codec),
         )
     
-    @staticmethod
-    def compress(a: torch.Tensor) -> 'HuffmanWeight':
-        return HuffmanWeight.compress_split_n(a, n=get_block_size_n(a)[0])
+    @classmethod
+    def compress(cls: type['HuffmanWeight'], a: torch.Tensor) -> 'HuffmanWeight':
+        return cls.compress_split_n(a, n=get_block_size_n(a)[0])
+
+
+class ANSWeight(HuffmanWeight):
+    def __init__(
+        self,
+        rem: Tensor,
+        exp: Tensor,
+        offsets: Tensor,
+        LUT: Tensor,
+    ):
+        nn.Module.__init__(self)
+        self.rem = nn.Buffer(rem)
+        self.exp = nn.Buffer(exp)
+        self.offsets = nn.Buffer(offsets)
+        self.LUT = nn.Buffer(torch.as_tensor(LUT))
+    
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        # if kwargs is None:
+        #     kwargs = {}
+        # if func is not F.linear:
+        #     return NotImplemented
+        # return linear_huffman(*args, **kwargs)
+        raise NotImplementedError()
+    
+    def get_weight(self) -> Tensor:
+        # weight = torch.empty_like(self.rem, dtype=torch.bfloat16)
+        # assert weight.device == self.rem.device
+        # assert weight.device.type == 'cuda'
+        # huffman_decode(
+        #     self.rem, self.exp, weight,
+        #     self.offsets, self.LUT1, self.LUT2, self.LUT3, self.LUT4, self.code_lengths
+        # )
+        # weight.transpose_(0, 1)
+        # weight = weight.flatten(1, 2)
+        # return weight
+        raise NotImplementedError()
+    
+    @classmethod
+    def get_codec(cls, a: torch.Tensor) -> RANSEncoder:
+        device = torch.device('cuda', 0)
+        _, exp = split_bf16(a.to(device))
+        bincount = torch.bincount(exp.flatten(), minlength=256).to(torch.int64)
+        codec = RANSEncoder(bincount.tolist())
+        return codec
+    
+    @classmethod
+    def compress_groups(cls, x: Tensor, codec: RANSEncoder) -> tuple[Tensor, Tensor]:
+        device = x.device
+        
+        xx = x.flatten(0, 1) # [b x g, n]
+        xx_output = torch.zeros(xx.size(0), xx.size(1) * 8, dtype=torch.int32, device=device) # [b x g, maxn]
+        xx_output_lengths = torch.zeros(xx.size(0), dtype=torch.int32, device=device)
+        freq = torch.tensor(codec.freq, dtype=torch.int32, device=device)
+        cum = torch.tensor(codec.cum, dtype=torch.int32, device=device)
+        ans_encode(xx, freq, cum, xx_output, xx_output_lengths)
+        
+        xx_output_lengths = (xx_output_lengths.view(x.size(0), x.size(1)).max(dim=-1, 
+            keepdim=True).values.expand(-1, x.size(1))).view_as(xx_output_lengths)
+        xx_output_lengths = xx_output_lengths.view(x.size(0), x.size(1))[:, 0] # [b]
+        
+        return xx_output, xx_output_lengths
     
 
 class HuffmanLinear(nn.Module):
