@@ -15,12 +15,12 @@ class RANSEncoder:
             raise ValueError("freq 不能为空")
         
         if isinstance(freq, list):
-            freq = {s: f for s, f in enumerate(freq)}
+            freq = {s: f for s, f in enumerate(freq) if f > 0}
 
         self.precision = precision
         self.base = 1 << precision
         self.freq = self._normalize(freq)
-        self.freq = [self.freq.get(s, 0) for s in range(16)]
+        self.freq = [self.freq.get(s, 0) for s in range(256)]
         self.mask = self.base - 1
         
         self.cum = []
@@ -50,7 +50,7 @@ class RANSEncoder:
             if count <= 0:
                 raise ValueError(f"符号 {sym} 的频率必须 > 0")
             value = count * self.base / total
-            base_val = int(value)
+            base_val = int(round(value))
             if base_val == 0:
                 base_val = 1
             scaled[sym] = base_val
@@ -59,19 +59,21 @@ class RANSEncoder:
         current = sum(scaled.values())
         if current < self.base:
             remainders.sort(reverse=True)
-            for _, sym in remainders:
-                if current == self.base:
-                    break
-                scaled[sym] += 1
-                current += 1
+            while current < self.base:
+                for _, sym in remainders:
+                    if current == self.base:
+                        break
+                    scaled[sym] += 1
+                    current += 1
         elif current > self.base:
             remainders.sort()
-            for _, sym in remainders:
-                if current == self.base:
-                    break
-                if scaled[sym] > 1:
-                    scaled[sym] -= 1
-                    current -= 1
+            while current > self.base:
+                for _, sym in remainders:
+                    if current == self.base:
+                        break
+                    if scaled[sym] > 1:
+                        scaled[sym] -= 1
+                        current -= 1
 
         if sum(scaled.values()) != self.base:
             raise ValueError("归一化失败，无法匹配目标基数")
@@ -148,7 +150,7 @@ class RANSEncoder:
 # --- 使用示例 ---
 if __name__ == "__main__":
     sample = [1, 2, 3, 3, 2, 12, 13, 11, 1, 8, 1, 7, 1, 6, 1, 1]
-    codec = RANSEncoder.from_data(sample, precision=12)
+    codec = RANSEncoder.from_data(sample, precision=8)
 
     packed = codec.compress(sample)
     restored = codec.decompress(packed, len(sample))

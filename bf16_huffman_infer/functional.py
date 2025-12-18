@@ -17,7 +17,8 @@ OP_PER_LANE = 1
 __all__ = [
     "linear_huffman",
     "HuffmanWeight",
-    "HuffmanLinear",
+    "ANSWeight",
+    "CompressedLinear",
     "convert_all_linear",
     "convert",
 ]
@@ -280,8 +281,19 @@ class ANSWeight(HuffmanWeight):
         device = torch.device('cuda', 0)
         _, exp = split_bf16(a.to(device))
         bincount = torch.bincount(exp.flatten(), minlength=256).to(torch.int64)
-        codec = RANSEncoder(bincount.tolist())
+        codec = RANSEncoder(bincount.tolist(), precision=8)
         return codec
+    
+    @classmethod
+    def get_lut_kwargs(cls, codec: RANSEncoder) -> dict[str, Tensor]:
+        lut = torch.tensor(codec.decode_lut, dtype=torch.int32)
+        sym = lut[:, 0]
+        freq = lut[:, 1]
+        cum = lut[:, 2]
+        lut = (sym << 24) | (freq << 12) | cum
+        return {
+            'LUT': lut,
+        }
     
     @classmethod
     def compress_groups(cls, x: Tensor, codec: RANSEncoder) -> tuple[Tensor, Tensor]:
@@ -294,14 +306,12 @@ class ANSWeight(HuffmanWeight):
         cum = torch.tensor(codec.cum, dtype=torch.int32, device=device)
         ans_encode(xx, freq, cum, xx_output, xx_output_lengths)
         
-        xx_output_lengths = (xx_output_lengths.view(x.size(0), x.size(1)).max(dim=-1, 
-            keepdim=True).values.expand(-1, x.size(1))).view_as(xx_output_lengths)
-        xx_output_lengths = xx_output_lengths.view(x.size(0), x.size(1))[:, 0] # [b]
+        xx_output_lengths = xx_output_lengths.view(x.size(0), x.size(1)).max(dim=-1).values
         
         return xx_output, xx_output_lengths
     
 
-class HuffmanLinear(nn.Module):
+class CompressedLinear(nn.Module):
     def __init__(self, weight: HuffmanWeight, bias: Optional[Tensor]) -> None:
         super().__init__()
         self.weight = weight
@@ -311,9 +321,9 @@ class HuffmanLinear(nn.Module):
         return F.linear(input, self.weight, self.bias)
 
 
-def convert(linear: nn.Linear, name, disable_precision_check=True) -> HuffmanLinear:
-    module = HuffmanLinear(
-        weight=HuffmanWeight.compress(linear.weight),
+def convert(linear: nn.Linear, name, disable_precision_check=True) -> CompressedLinear:
+    module = CompressedLinear(
+        weight=ANSWeight.compress(linear.weight),
         bias=linear.bias,
     )
     
