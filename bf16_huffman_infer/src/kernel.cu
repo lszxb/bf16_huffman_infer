@@ -1,5 +1,6 @@
 #include <torch/csrc/stable/library.h>
 #include <torch/csrc/stable/accelerator.h>
+#include <c10/cuda/CUDAStream.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 #include <array>
@@ -25,7 +26,9 @@ namespace bf16_huffman_infer {
 
 
 cudaStream_t get_tensor_stream(const torch::stable::Tensor &t) {
-    return (cudaStream_t)torch::stable::accelerator::getCurrentStream(t.get_device_index()).id();
+    // The stable abi now will crash while capturing cuda graph, so use the old one now.
+    // return (cudaStream_t)torch::stable::accelerator::getCurrentStream(t.get_device_index()).id();
+    return c10::cuda::getCurrentCUDAStream(t.get_device_index()).stream();
 }
 
 
