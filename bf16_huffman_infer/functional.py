@@ -319,9 +319,24 @@ class CompressedLinear(nn.Module):
         return F.linear(input, self.weight, self.bias)
 
 
-def convert(linear: nn.Linear, name, disable_precision_check=True) -> CompressedLinear:
+def convert(linear: nn.Linear, name, disable_precision_check=True, algo='huffman') -> CompressedLinear:
+    assert algo in ('huffman', 'ans', 'smallest')
+    
+    if algo == 'huffman':
+        weight = HuffmanWeight.compress(linear.weight)
+    elif algo == 'ans':
+        weight = ANSWeight.compress(linear.weight)
+    elif algo == 'smallest':
+        weight = min(
+            [
+                HuffmanWeight.compress(linear.weight),
+                ANSWeight.compress(linear.weight),
+            ],
+            key=lambda w: sum(buffer.nelement() * buffer.element_size() for buffer in w.buffers())
+        )
+
     module = CompressedLinear(
-        weight=ANSWeight.compress(linear.weight),
+        weight=weight,
         bias=linear.bias,
     )
     
@@ -359,7 +374,7 @@ def convert(linear: nn.Linear, name, disable_precision_check=True) -> Compressed
     return module
 
 
-def convert_all_linear(model: nn.Module, min_out_features=4096, progress=True) -> None:
+def convert_all_linear(model: nn.Module, min_out_features=4096, progress=True, algo='huffman') -> None:
     targets = []
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
@@ -367,7 +382,7 @@ def convert_all_linear(model: nn.Module, min_out_features=4096, progress=True) -
                 targets.append(name)
     
     for name in tqdm(targets, disable=not progress):
-        m = convert(model.get_submodule(name), name)
+        m = convert(model.get_submodule(name), name, algo=algo)
         model.set_submodule(name, m)
 
 
