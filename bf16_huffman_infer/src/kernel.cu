@@ -1,6 +1,8 @@
+#define USE_CUDA
+
 #include <torch/csrc/stable/library.h>
-#include <torch/csrc/stable/accelerator.h>
-#include <c10/cuda/CUDAStream.h>
+// #include <torch/csrc/stable/accelerator.h>
+#include <torch/csrc/inductor/aoti_torch/c/shim.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 #include <array>
@@ -26,9 +28,13 @@ namespace bf16_huffman_infer {
 
 
 cudaStream_t get_tensor_stream(const torch::stable::Tensor &t) {
-    // The stable abi now will crash while capturing cuda graph, so use the old one now.
+    // The following stable abi now will crash while capturing cuda graph, so use the low level once.
     // return (cudaStream_t)torch::stable::accelerator::getCurrentStream(t.get_device_index()).id();
-    return c10::cuda::getCurrentCUDAStream(t.get_device_index()).stream();
+    
+    // This is from https://github.com/facebookresearch/xformers/blob/0b76a47e097ff94b33824ef1df9511278f80da3f/xformers/csrc/pt_stable_utils.h#L35
+    void* ret;
+    TORCH_ERROR_CODE_CHECK(aoti_torch_get_current_cuda_stream(t.get_device_index(), &ret));
+    return static_cast<cudaStream_t>(ret);
 }
 
 
