@@ -1,7 +1,8 @@
-#include <torch/all.h>
-#include <c10/cuda/CUDAStream.h>
+#include <torch/csrc/stable/library.h>
+#include <torch/csrc/stable/accelerator.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
+#include <array>
 
 
 #define REP_1_8(x, y, ...) \
@@ -18,9 +19,15 @@
 #define OP_PER_LANE 1
 #define MAX_WARP_BLOCK_RATIO 4
 #define MAX_SPLIT_K 32
-#define ANS_PRECISION 8
+#define ANS_PRECISION 10
 
 namespace bf16_huffman_infer {
+
+
+cudaStream_t get_tensor_stream(const torch::stable::Tensor &t) {
+    return (cudaStream_t)torch::stable::accelerator::getCurrentStream(t.get_device_index()).id();
+}
+
 
 static int ceil_div(int a, int b) {
     return (a + b - 1) / b;
@@ -119,9 +126,9 @@ __global__ void gemv_bf16_kernel(
 
 
 void gemv_bf16(
-    const torch::Tensor &A,
-    const torch::Tensor &X,
-    torch::Tensor &Y
+    const torch::stable::Tensor &A,
+    const torch::stable::Tensor &X,
+    torch::stable::Tensor &Y
 ) {
     int M = A.size(0);
     int N = A.size(1);
@@ -130,19 +137,29 @@ void gemv_bf16(
     auto block_size = dim3(32, num_warps_per_block, 1);
     int grid_size = ceil_div(M, OP_PER_LANE * num_warps_per_block);
 
-    auto stream = c10::cuda::getCurrentCUDAStream(A.device().index()).stream();
+    auto stream = get_tensor_stream(A);
 
     int batch_size = X.size(0);
-    TORCH_CHECK_LE(batch_size, 8);
+    STD_TORCH_CHECK(batch_size <= 8);
 
     REP_1_8(
         b, batch_size,
         gemv_bf16_kernel<b><<<grid_size, block_size, 0, stream>>>(
-            static_cast<const nv_bfloat162*>(A.const_data_ptr()),
-            static_cast<const nv_bfloat162*>(X.const_data_ptr()),
-            static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
+            static_cast<const nv_bfloat162*>(A.data_ptr()),
+            static_cast<const nv_bfloat162*>(X.data_ptr()),
+            static_cast<nv_bfloat16*>(Y.data_ptr()),
             M, N
         )
+    );
+}
+
+
+void boxed_gemv_bf16(StableIValue* stack, uint64_t num_args, uint64_t num_outputs) {
+    auto Y = to<torch::stable::Tensor>(stack[2]);
+    gemv_bf16(
+        to<torch::stable::Tensor>(stack[0]),
+        to<torch::stable::Tensor>(stack[1]),
+        Y
     );
 }
 
@@ -446,49 +463,66 @@ gemv_bf16_huffman_kernel(
 
 
 void gemv_bf16_huffman(
-    const torch::Tensor &A_rem,
-    const torch::Tensor &A_exp,
-    const torch::Tensor &X,
-    torch::Tensor &Y,
-    const torch::Tensor &offsets,
-    const torch::Tensor &LUT1,
-    const torch::Tensor &LUT2,
-    const torch::Tensor &LUT3,
-    const torch::Tensor &LUT4,
-    const torch::Tensor &code_lengths
+    const torch::stable::Tensor &A_rem,
+    const torch::stable::Tensor &A_exp,
+    const torch::stable::Tensor &X,
+    torch::stable::Tensor &Y,
+    const torch::stable::Tensor &offsets,
+    const torch::stable::Tensor &LUT1,
+    const torch::stable::Tensor &LUT2,
+    const torch::stable::Tensor &LUT3,
+    const torch::stable::Tensor &LUT4,
+    const torch::stable::Tensor &code_lengths
 ) {
     int split_k = A_rem.size(0);
     int M = A_rem.size(1);
     int N = A_rem.size(2);
 
     cudaDeviceProp attr;
-    TORCH_CHECK(cudaGetDeviceProperties(&attr, A_rem.device().index()) == cudaSuccess);
+    STD_TORCH_CHECK(cudaGetDeviceProperties(&attr, A_rem.get_device_index()) == cudaSuccess);
     int num_warps_per_block = attr.maxThreadsPerMultiProcessor / 32 / attr.maxBlocksPerMultiProcessor;
     num_warps_per_block = ceil_div(num_warps_per_block, split_k);
 
     auto block_size = dim3(32, split_k, num_warps_per_block);
     auto grid_size = dim3(ceil_div(M, OP_PER_LANE * num_warps_per_block), 1, 1);
 
-    auto stream = c10::cuda::getCurrentCUDAStream(A_rem.device().index()).stream();
+    auto stream = get_tensor_stream(A_rem);
 
     int batch_size = X.size(0);
-    TORCH_CHECK_LE(batch_size, 8);
+    STD_TORCH_CHECK(batch_size <= 8);
 
     REP_1_8(
         b, batch_size,
         gemv_bf16_huffman_kernel<b><<<grid_size, block_size, 0, stream>>>(
-            static_cast<const uchar4*>(A_rem.const_data_ptr()),
-            static_cast<const uint32_t*>(A_exp.const_data_ptr()),
-            static_cast<const nv_bfloat162*>(X.const_data_ptr()),
-            static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
-            static_cast<const uint32_t*>(offsets.const_data_ptr()),
-            static_cast<const uint8_t*>(LUT1.const_data_ptr()),
-            static_cast<const uint8_t*>(LUT2.const_data_ptr()),
-            static_cast<const uint8_t*>(LUT3.const_data_ptr()),
-            static_cast<const uint8_t*>(LUT4.const_data_ptr()),
-            static_cast<const uint8_t*>(code_lengths.const_data_ptr()),
+            static_cast<const uchar4*>(A_rem.data_ptr()),
+            static_cast<const uint32_t*>(A_exp.data_ptr()),
+            static_cast<const nv_bfloat162*>(X.data_ptr()),
+            static_cast<nv_bfloat16*>(Y.data_ptr()),
+            static_cast<const uint32_t*>(offsets.data_ptr()),
+            static_cast<const uint8_t*>(LUT1.data_ptr()),
+            static_cast<const uint8_t*>(LUT2.data_ptr()),
+            static_cast<const uint8_t*>(LUT3.data_ptr()),
+            static_cast<const uint8_t*>(LUT4.data_ptr()),
+            static_cast<const uint8_t*>(code_lengths.data_ptr()),
             M, N, split_k
         )
+    );
+}
+
+
+void boxed_gemv_bf16_huffman(StableIValue* stack, uint64_t num_args, uint64_t num_outputs) {
+    auto Y = to<torch::stable::Tensor>(stack[3]);
+    gemv_bf16_huffman(
+        to<torch::stable::Tensor>(stack[0]),
+        to<torch::stable::Tensor>(stack[1]),
+        to<torch::stable::Tensor>(stack[2]),
+        Y,
+        to<torch::stable::Tensor>(stack[4]),
+        to<torch::stable::Tensor>(stack[5]),
+        to<torch::stable::Tensor>(stack[6]),
+        to<torch::stable::Tensor>(stack[7]),
+        to<torch::stable::Tensor>(stack[8]),
+        to<torch::stable::Tensor>(stack[9])
     );
 }
 
@@ -590,15 +624,15 @@ __global__ void huffman_decode_kernel(
 
 
 void huffman_decode(
-    const torch::Tensor &A_rem,
-    const torch::Tensor &A_exp,
-    torch::Tensor &Y,
-    const torch::Tensor &offsets,
-    const torch::Tensor &LUT1,
-    const torch::Tensor &LUT2,
-    const torch::Tensor &LUT3,
-    const torch::Tensor &LUT4,
-    const torch::Tensor &code_lengths
+    const torch::stable::Tensor &A_rem,
+    const torch::stable::Tensor &A_exp,
+    torch::stable::Tensor &Y,
+    const torch::stable::Tensor &offsets,
+    const torch::stable::Tensor &LUT1,
+    const torch::stable::Tensor &LUT2,
+    const torch::stable::Tensor &LUT3,
+    const torch::stable::Tensor &LUT4,
+    const torch::stable::Tensor &code_lengths
 ) {
     int split_k = A_rem.size(0);
     int M = A_rem.size(1);
@@ -608,19 +642,35 @@ void huffman_decode(
     auto block_size = dim3(32, num_warps_per_block, 1);
     auto grid_size = dim3(ceil_div(M, OP_PER_LANE * num_warps_per_block), 1, 1);
 
-    auto stream = c10::cuda::getCurrentCUDAStream(A_rem.device().index()).stream();
+    auto stream = get_tensor_stream(A_rem);
 
     huffman_decode_kernel<<<grid_size, block_size, 0, stream>>>(
-        static_cast<const uchar2*>(A_rem.const_data_ptr()),
-        static_cast<const uint32_t*>(A_exp.const_data_ptr()),
-        static_cast<nv_bfloat162*>(Y.mutable_data_ptr()),
-        static_cast<const uint32_t*>(offsets.const_data_ptr()),
-        static_cast<const uint8_t*>(LUT1.const_data_ptr()),
-        static_cast<const uint8_t*>(LUT2.const_data_ptr()),
-        static_cast<const uint8_t*>(LUT3.const_data_ptr()),
-        static_cast<const uint8_t*>(LUT4.const_data_ptr()),
-        static_cast<const uint8_t*>(code_lengths.const_data_ptr()),
+        static_cast<const uchar2*>(A_rem.data_ptr()),
+        static_cast<const uint32_t*>(A_exp.data_ptr()),
+        static_cast<nv_bfloat162*>(Y.data_ptr()),
+        static_cast<const uint32_t*>(offsets.data_ptr()),
+        static_cast<const uint8_t*>(LUT1.data_ptr()),
+        static_cast<const uint8_t*>(LUT2.data_ptr()),
+        static_cast<const uint8_t*>(LUT3.data_ptr()),
+        static_cast<const uint8_t*>(LUT4.data_ptr()),
+        static_cast<const uint8_t*>(code_lengths.data_ptr()),
         M, N, split_k
+    );
+}
+
+
+void boxed_huffman_decode(StableIValue* stack, uint64_t num_args, uint64_t num_outputs) {
+    auto Y = to<torch::stable::Tensor>(stack[2]);
+    huffman_decode(
+        to<torch::stable::Tensor>(stack[0]),
+        to<torch::stable::Tensor>(stack[1]),
+        Y,
+        to<torch::stable::Tensor>(stack[3]),
+        to<torch::stable::Tensor>(stack[4]),
+        to<torch::stable::Tensor>(stack[5]),
+        to<torch::stable::Tensor>(stack[6]),
+        to<torch::stable::Tensor>(stack[7]),
+        to<torch::stable::Tensor>(stack[8])
     );
 }
 
@@ -649,23 +699,35 @@ __global__ void huffman_encode_kernel(
 
 
 void huffman_encode(
-    const torch::Tensor &data,
-    const torch::Tensor &LUT,
-    torch::Tensor &output,
-    torch::Tensor &output_lengths
-) { 
+    const torch::stable::Tensor &data,
+    const torch::stable::Tensor &LUT,
+    torch::stable::Tensor &output,
+    torch::stable::Tensor &output_lengths
+) {
     int num_data = data.size(0);
     int data_lengths = data.size(1);
     int block_size = 32;
     int grid_size = ceil_div(num_data, block_size);
-    auto stream = c10::cuda::getCurrentCUDAStream(data.device().index()).stream();
+    auto stream = get_tensor_stream(data);
     huffman_encode_kernel<<<grid_size, block_size, 0, stream>>>(
-        static_cast<const uint8_t*>(data.const_data_ptr()),
+        static_cast<const uint8_t*>(data.data_ptr()),
         data_lengths,
         num_data,
-        static_cast<const char*>(LUT.const_data_ptr()),
-        static_cast<char*>(output.mutable_data_ptr()),
-        static_cast<uint32_t*>(output_lengths.mutable_data_ptr())
+        static_cast<const char*>(LUT.data_ptr()),
+        static_cast<char*>(output.data_ptr()),
+        static_cast<uint32_t*>(output_lengths.data_ptr())
+    );
+}
+
+
+void boxed_huffman_encode(StableIValue* stack, uint64_t num_args, uint64_t num_outputs) {
+    auto output = to<torch::stable::Tensor>(stack[2]);
+    auto output_lengths = to<torch::stable::Tensor>(stack[3]);
+    huffman_encode(
+        to<torch::stable::Tensor>(stack[0]),
+        to<torch::stable::Tensor>(stack[1]),
+        output,
+        output_lengths
     );
 }
 
@@ -735,41 +797,54 @@ gemv_bf16_ans_kernel(
 
 
 void gemv_bf16_ans(
-    const torch::Tensor &A_rem,
-    const torch::Tensor &A_exp,
-    const torch::Tensor &X,
-    torch::Tensor &Y,
-    const torch::Tensor &offsets,
-    const torch::Tensor &LUT
+    const torch::stable::Tensor &A_rem,
+    const torch::stable::Tensor &A_exp,
+    const torch::stable::Tensor &X,
+    torch::stable::Tensor &Y,
+    const torch::stable::Tensor &offsets,
+    const torch::stable::Tensor &LUT
 ) {
     int split_k = A_rem.size(0);
     int M = A_rem.size(1);
     int N = A_rem.size(2);
 
     cudaDeviceProp attr;
-    TORCH_CHECK(cudaGetDeviceProperties(&attr, A_rem.device().index()) == cudaSuccess);
+    STD_TORCH_CHECK(cudaGetDeviceProperties(&attr, A_rem.get_device_index()) == cudaSuccess);
     int num_warps_per_block = attr.maxThreadsPerMultiProcessor / 32 / attr.maxBlocksPerMultiProcessor;
     num_warps_per_block = ceil_div(num_warps_per_block, split_k);
 
     auto block_size = dim3(32, split_k, num_warps_per_block);
     auto grid_size = dim3(ceil_div(M, OP_PER_LANE * num_warps_per_block), 1, 1);
 
-    auto stream = c10::cuda::getCurrentCUDAStream(A_rem.device().index()).stream();
+    auto stream = get_tensor_stream(A_rem);
 
     int batch_size = X.size(0);
-    TORCH_CHECK_LE(batch_size, 8);
+    STD_TORCH_CHECK(batch_size <= 8);
 
     REP_1_8(
         b, batch_size,
         gemv_bf16_ans_kernel<b><<<grid_size, block_size, 0, stream>>>(
-            static_cast<const uchar4*>(A_rem.const_data_ptr()),
-            static_cast<const uint32_t*>(A_exp.const_data_ptr()),
-            static_cast<const nv_bfloat162*>(X.const_data_ptr()),
-            static_cast<nv_bfloat16*>(Y.mutable_data_ptr()),
-            static_cast<const uint32_t*>(offsets.const_data_ptr()),
-            static_cast<const ans_LUT*>(LUT.const_data_ptr()),
+            static_cast<const uchar4*>(A_rem.data_ptr()),
+            static_cast<const uint32_t*>(A_exp.data_ptr()),
+            static_cast<const nv_bfloat162*>(X.data_ptr()),
+            static_cast<nv_bfloat16*>(Y.data_ptr()),
+            static_cast<const uint32_t*>(offsets.data_ptr()),
+            static_cast<const ans_LUT*>(LUT.data_ptr()),
             M, N, split_k
         )
+    );
+}
+
+
+void boxed_gemv_bf16_ans(StableIValue* stack, uint64_t num_args, uint64_t num_outputs) {
+    auto Y = to<torch::stable::Tensor>(stack[3]);
+    gemv_bf16_ans(
+        to<torch::stable::Tensor>(stack[0]),
+        to<torch::stable::Tensor>(stack[1]),
+        to<torch::stable::Tensor>(stack[2]),
+        Y,
+        to<torch::stable::Tensor>(stack[4]),
+        to<torch::stable::Tensor>(stack[5])
     );
 }
 
@@ -824,35 +899,49 @@ __global__ void ans_encode_kernel(
 
 
 void ans_encode(
-    const torch::Tensor &data,
-    const torch::Tensor &freq,
-    const torch::Tensor &cum,
-    torch::Tensor &output,
-    torch::Tensor &output_lengths
-) { 
+    const torch::stable::Tensor &data,
+    const torch::stable::Tensor &freq,
+    const torch::stable::Tensor &cum,
+    torch::stable::Tensor &output,
+    torch::stable::Tensor &output_lengths
+) {
     int num_data = data.size(0);
     int data_lengths = data.size(1);
     int block_size = 32;
     int grid_size = ceil_div(num_data, block_size);
-    auto stream = c10::cuda::getCurrentCUDAStream(data.device().index()).stream();
+    auto stream = get_tensor_stream(data);
     ans_encode_kernel<<<grid_size, block_size, 0, stream>>>(
-        static_cast<const uint8_t*>(data.const_data_ptr()),
+        static_cast<const uint8_t*>(data.data_ptr()),
         data_lengths,
         num_data,
-        static_cast<const uint32_t*>(freq.const_data_ptr()),
-        static_cast<const uint32_t*>(cum.const_data_ptr()),
-        static_cast<uint32_t*>(output.mutable_data_ptr()),
-        static_cast<uint32_t*>(output_lengths.mutable_data_ptr())
+        static_cast<const uint32_t*>(freq.data_ptr()),
+        static_cast<const uint32_t*>(cum.data_ptr()),
+        static_cast<uint32_t*>(output.data_ptr()),
+        static_cast<uint32_t*>(output_lengths.data_ptr())
     );
 }
 
-TORCH_LIBRARY_IMPL(bf16_huffman_infer, CUDA, m) {
-    m.impl("gemv_bf16", &gemv_bf16);
-    m.impl("gemv_bf16_huffman", &gemv_bf16_huffman);
-    m.impl("huffman_encode", &huffman_encode);
-    m.impl("huffman_decode", &huffman_decode);
-    m.impl("gemv_bf16_ans", &gemv_bf16_ans);
-    m.impl("ans_encode", &ans_encode);
+
+void boxed_ans_encode(StableIValue* stack, uint64_t num_args, uint64_t num_outputs) {
+    auto output = to<torch::stable::Tensor>(stack[3]);
+    auto output_lengths = to<torch::stable::Tensor>(stack[4]);
+    ans_encode(
+        to<torch::stable::Tensor>(stack[0]),
+        to<torch::stable::Tensor>(stack[1]),
+        to<torch::stable::Tensor>(stack[2]),
+        output,
+        output_lengths
+    );
+}
+
+
+STABLE_TORCH_LIBRARY_IMPL(bf16_huffman_infer, CUDA, m) {
+    m.impl("gemv_bf16", &boxed_gemv_bf16);
+    m.impl("gemv_bf16_huffman", &boxed_gemv_bf16_huffman);
+    m.impl("huffman_encode", &boxed_huffman_encode);
+    m.impl("huffman_decode", &boxed_huffman_decode);
+    m.impl("gemv_bf16_ans", &boxed_gemv_bf16_ans);
+    m.impl("ans_encode", &boxed_ans_encode);
 }
 
 }

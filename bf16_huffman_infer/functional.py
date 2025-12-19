@@ -281,7 +281,7 @@ class ANSWeight(HuffmanWeight):
         device = torch.device('cuda', 0)
         _, exp = split_bf16(a.to(device))
         bincount = torch.bincount(exp.flatten(), minlength=256).to(torch.int64)
-        codec = RANSEncoder(bincount.tolist(), precision=8)
+        codec = RANSEncoder(bincount.tolist(), precision=10)
         return codec
     
     @classmethod
