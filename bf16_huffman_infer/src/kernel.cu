@@ -210,6 +210,94 @@ gemv_bf16_general_kernel(
 }
 
 
+template <typename decoder, typename LUT>
+__device__ __inline__ void
+decode_general_kernel(
+    const uchar4* A_rem, const uint32_t* A_exp, nv_bfloat162* Y,
+    const uint32_t* offsets,
+    const LUT* decoder_LUT,
+    int M, int N, int split_k
+) {
+    assert(blockDim.z <= MAX_WARP_BLOCK_RATIO);
+    assert(split_k <= MAX_SPLIT_K);
+
+    __syncthreads();
+
+    assert(blockDim.x == warpSize);
+
+    int warp_group_id = blockIdx.x * blockDim.z + threadIdx.z;
+    int lane_id = threadIdx.x;
+    int thread_id = warp_group_id * blockDim.x + threadIdx.x;
+
+    if (warp_group_id * OP_PER_LANE >= M) {
+        return; // no work to do
+    }
+
+    Y += warp_group_id * OP_PER_LANE * (N * split_k) / (sizeof(Y[0]) / sizeof(nv_bfloat16));
+
+    int k = threadIdx.y;
+    // int k = warp_group_id / (M / OP_PER_LANE);
+    // warp_group_id %= (M / OP_PER_LANE);
+
+    A_rem += M * N / sizeof(A_rem[0]) * k;
+    Y += N / (sizeof(Y[0]) / sizeof(nv_bfloat16)) * k;
+    offsets += M * k;
+
+    int stride = N / 4;
+
+    nv_bfloat162 *py = &Y[lane_id];
+    const uchar4 *par = &A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
+
+    const uint32_t *pae0 = &A_exp[offsets[warp_group_id] + lane_id + 0];
+    const uint32_t *pae1 = &A_exp[offsets[warp_group_id] + lane_id + warpSize];
+
+    uchar4 ar[OP_PER_LANE];
+    uchar4 ae[OP_PER_LANE];
+
+    decoder dec0;
+    decoder dec1;
+
+    __syncwarp();
+
+    for (int count = 0, n_iter = N / (4 * warpSize); count < n_iter; count += 1) {
+        const uchar4 *npar = par;
+        #pragma unroll
+        for (int i = 0; i < OP_PER_LANE; i++) {
+            ar[i] = *npar;
+            npar += stride;
+        }
+        par += warpSize;
+
+        #pragma unroll
+        for (int i = 0; i < OP_PER_LANE; i++) {
+            ae[i].x = dec0.decode_symbol2(pae0, warpSize * 2, decoder_LUT);
+            ae[i].z = dec1.decode_symbol2(pae1, warpSize * 2, decoder_LUT);
+            ae[i].y = dec0.decode_symbol2(pae0, warpSize * 2, decoder_LUT);
+            ae[i].w = dec1.decode_symbol2(pae1, warpSize * 2, decoder_LUT);
+        }
+
+        #pragma unroll
+        for (int i = 0; i < OP_PER_LANE; i++) {
+            uint32_t rem0 = (uint32_t(ar[i].y) << 16) | ar[i].x;
+            uint32_t rem1 = (uint32_t(ar[i].w) << 16) | ar[i].z;
+            uint32_t exp0 = (uint32_t(ae[i].y) << 16) | ae[i].x;
+            uint32_t exp1 = (uint32_t(ae[i].w) << 16) | ae[i].z;
+            union {
+                uint32_t _bits;
+                nv_bfloat162 u;
+            } bf160{((rem0 << 8) & 0x80008000) | (rem0 & 0x007F007F) | (exp0 << 7)};
+            union {
+                uint32_t _bits;
+                nv_bfloat162 u;
+            } bf161{((rem1 << 8) & 0x80008000) | (rem1 & 0x007F007F) | (exp1 << 7)};
+            py[i * (split_k * N / (sizeof(py[0]) / sizeof(nv_bfloat16))) + 0] = bf160.u;
+            py[i * (split_k * N / (sizeof(py[0]) / sizeof(nv_bfloat16))) + warpSize] = bf161.u;
+        }
+        py += warpSize * 2;
+    }
+}
+
+
 struct huffman_LUT {
     uint8_t LUT1[256];
     uint8_t LUT2[256];
@@ -327,7 +415,7 @@ gemv_bf16_huffman_kernel(
     ((uint64_t*)sh_LUT.LUT4)[threadIdx.x] = ((const uint64_t*)LUT4)[threadIdx.x];
     ((uint64_t*)sh_LUT.code_lengths)[threadIdx.x] = ((const uint64_t*)code_lengths)[threadIdx.x];
 
-    gemv_bf16_general_kernel<batch_size, decoder, huffman_LUT>(
+    gemv_bf16_general_kernel<batch_size, huffman_decoder, huffman_LUT>(
         A_rem, A_exp, X, Y,
         offsets,
         &sh_LUT,
@@ -402,7 +490,7 @@ void boxed_gemv_bf16_huffman(StableIValue* stack, uint64_t num_args, uint64_t nu
 
 
 __global__ void huffman_decode_kernel(
-    const uchar2* A_rem, const uint32_t* A_exp, nv_bfloat162* Y,
+    const uchar4* A_rem, const uint32_t* A_exp, nv_bfloat162* Y,
     const uint32_t* offsets,
     const uint8_t* LUT1, const uint8_t* LUT2, const uint8_t* LUT3, const uint8_t* LUT4,
     const uint8_t* code_lengths,
@@ -416,84 +504,12 @@ __global__ void huffman_decode_kernel(
     ((uint64_t*)sh_LUT.LUT4)[threadIdx.x] = ((const uint64_t*)LUT4)[threadIdx.x];
     ((uint64_t*)sh_LUT.code_lengths)[threadIdx.x] = ((const uint64_t*)code_lengths)[threadIdx.x];
 
-    __syncthreads();
-
-    int thread_id = ((blockIdx.x * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x) * 2;
-
-    int warp_group_size = warpSize * 2;
-
-    int warp_group_id = thread_id / warp_group_size;
-    int lane_id = thread_id % warp_group_size;
-
-    if (warp_group_id * OP_PER_LANE > M) {
-        return; // no work to do
-    }
-
-    for (int k = 0; k < split_k; k++) {
-        int stride = N / 2;
-
-        const uchar4 *par = (const uchar4 *)&A_rem[(warp_group_id * OP_PER_LANE) * stride + lane_id];
-        const uint32_t *pae = &A_exp[offsets[warp_group_id] + lane_id / 2];
-        const uint32_t *pae2 = &A_exp[offsets[warp_group_id] + lane_id / 2 + warpSize];
-
-        uchar4 ar[OP_PER_LANE];
-        uchar4 ae[OP_PER_LANE];
-
-        huffman_decoder dec;
-        huffman_decoder dec2;
-
-        __syncwarp();
-
-        for (int count = 0, n_iter = N / (2 * warp_group_size); count < n_iter; count += 1) {
-            const uchar4 *npar = par;
-            #pragma unroll
-            for (int i = 0; i < OP_PER_LANE; i++) {
-                ar[i] = *npar;
-                npar += stride / 2;
-            }
-            par += warpSize;
-
-            #pragma unroll
-            for (int i = 0; i < OP_PER_LANE; i++) {
-                ae[i].x = dec.decode_symbol2(pae, warp_group_size, &sh_LUT);
-                ae[i].z = dec2.decode_symbol2(pae2, warp_group_size, &sh_LUT);
-                ae[i].y = dec.decode_symbol2(pae, warp_group_size, &sh_LUT);
-                ae[i].w = dec2.decode_symbol2(pae2, warp_group_size, &sh_LUT);
-            }
-
-            // __syncwarp();
-
-            #pragma unroll
-            for (int i = 0; i < OP_PER_LANE; i++) {
-                uint32_t rem0 = (uint32_t(ar[i].y) << 16) | ar[i].x;
-                uint32_t rem1 = (uint32_t(ar[i].w) << 16) | ar[i].z;
-                uint32_t exp0 = (uint32_t(ae[i].y) << 16) | ae[i].x;
-                uint32_t exp1 = (uint32_t(ae[i].w) << 16) | ae[i].z;
-                union {
-                    uint32_t _bits;
-                    nv_bfloat162 u;
-                } bf160{((rem0 << 8) & 0x80008000) | (rem0 & 0x007F007F) | (exp0 << 7)};
-                union {
-                    uint32_t _bits;
-                    nv_bfloat162 u;
-                } bf161{((rem1 << 8) & 0x80008000) | (rem1 & 0x007F007F) | (exp1 << 7)};
-                Y[(warp_group_id * OP_PER_LANE + i) * N / 2 + count * warp_group_size + lane_id / 2] = bf160.u;
-                Y[(warp_group_id * OP_PER_LANE + i) * N / 2 + count * warp_group_size + lane_id / 2 + warpSize] = bf161.u;
-            }
-        }
-        
-        {
-            // handle split k
-            int num_warp_groups = blockDim.y * gridDim.x;
-            int offsets_stride = num_warp_groups;
-            // printf("%d\n", offsets_stride);
-
-            // N /= split_k;
-            A_rem += M * N / sizeof(A_rem[0]);
-            Y += M * N / (sizeof(Y[0]) / sizeof(nv_bfloat16));
-            offsets += offsets_stride;
-        }
-    }
+    decode_general_kernel<huffman_decoder, huffman_LUT>(
+        A_rem, A_exp, Y,
+        offsets,
+        &sh_LUT,
+        M, N, split_k
+    );
 }
 
 
@@ -512,14 +528,18 @@ void huffman_decode(
     int M = A_rem.size(1);
     int N = A_rem.size(2);
 
-    int num_warps_per_block = 4; // TODO: If 3 will crash randomly
-    auto block_size = dim3(32, num_warps_per_block, 1);
+    cudaDeviceProp attr;
+    STD_TORCH_CHECK(cudaGetDeviceProperties(&attr, A_rem.get_device_index()) == cudaSuccess);
+    int num_warps_per_block = attr.maxThreadsPerMultiProcessor / 32 / attr.maxBlocksPerMultiProcessor;
+    num_warps_per_block = ceil_div(num_warps_per_block, split_k);
+
+    auto block_size = dim3(32, split_k, num_warps_per_block);
     auto grid_size = dim3(ceil_div(M, OP_PER_LANE * num_warps_per_block), 1, 1);
 
     auto stream = get_tensor_stream(A_rem);
 
     huffman_decode_kernel<<<grid_size, block_size, 0, stream>>>(
-        static_cast<const uchar2*>(A_rem.data_ptr()),
+        static_cast<const uchar4*>(A_rem.data_ptr()),
         static_cast<const uint32_t*>(A_exp.data_ptr()),
         static_cast<nv_bfloat162*>(Y.data_ptr()),
         static_cast<const uint32_t*>(offsets.data_ptr()),
@@ -622,7 +642,7 @@ struct ans_decoder{
             pae += warp_group_size;
         }
 
-        __syncwarp();
+        // __syncwarp();
 
         if (state < (1 << ANS_PRECISION)) {
             // int num = __popc(__activemask());
@@ -809,6 +829,77 @@ void boxed_ans_encode(StableIValue* stack, uint64_t num_args, uint64_t num_outpu
 }
 
 
+__global__ void
+ans_decode_kernel(
+    const uchar4* A_rem, const uint32_t* A_exp, nv_bfloat162* Y,
+    const uint32_t* offsets,
+    const ans_LUT* LUT,
+    int M, int N, int split_k
+) {
+    static_assert(sizeof(ans_LUT) == 4, "ans_LUT size must be 4 bytes");
+    static_assert(ANS_PRECISION <= 12, "ANS_PRECISION must be less than or equal to 12");
+    __shared__ ans_LUT sh_LUT[1 << ANS_PRECISION];
+
+    int thread_idx = threadIdx.z * blockDim.y + threadIdx.y;
+    thread_idx = thread_idx * blockDim.x + threadIdx.x;
+    int block_size = blockDim.x * blockDim.y * blockDim.z;
+    for (int i = thread_idx; i < (1 << ANS_PRECISION); i += block_size) {
+        sh_LUT[i] = LUT[i];
+    }    
+
+    decode_general_kernel<ans_decoder, ans_LUT>(
+        A_rem, A_exp, Y,
+        offsets,
+        sh_LUT,
+        M, N, split_k
+    );
+}
+
+
+void ans_decode_kernel(
+    const torch::stable::Tensor &A_rem,
+    const torch::stable::Tensor &A_exp,
+    torch::stable::Tensor &Y,
+    const torch::stable::Tensor &offsets,
+    const torch::stable::Tensor &LUT
+) {
+    int split_k = A_rem.size(0);
+    int M = A_rem.size(1);
+    int N = A_rem.size(2);
+
+    cudaDeviceProp attr;
+    STD_TORCH_CHECK(cudaGetDeviceProperties(&attr, A_rem.get_device_index()) == cudaSuccess);
+    int num_warps_per_block = attr.maxThreadsPerMultiProcessor / 32 / attr.maxBlocksPerMultiProcessor;
+    num_warps_per_block = ceil_div(num_warps_per_block, split_k);
+
+    auto block_size = dim3(32, split_k, num_warps_per_block);
+    auto grid_size = dim3(ceil_div(M, OP_PER_LANE * num_warps_per_block), 1, 1);
+
+    auto stream = get_tensor_stream(A_rem);
+
+    ans_decode_kernel<<<grid_size, block_size, 0, stream>>>(
+        static_cast<const uchar4*>(A_rem.data_ptr()),
+        static_cast<const uint32_t*>(A_exp.data_ptr()),
+        static_cast<nv_bfloat162*>(Y.data_ptr()),
+        static_cast<const uint32_t*>(offsets.data_ptr()),
+        static_cast<const ans_LUT*>(LUT.data_ptr()),
+        M, N, split_k
+    );
+}
+
+
+void boxed_ans_decode(StableIValue* stack, uint64_t num_args, uint64_t num_outputs) {
+    auto Y = to<torch::stable::Tensor>(stack[2]);
+    ans_decode_kernel(
+        to<torch::stable::Tensor>(stack[0]),
+        to<torch::stable::Tensor>(stack[1]),
+        Y,
+        to<torch::stable::Tensor>(stack[3]),
+        to<torch::stable::Tensor>(stack[4])
+    );
+}
+
+
 STABLE_TORCH_LIBRARY_IMPL(bf16_huffman_infer, CUDA, m) {
     m.impl("gemv_bf16_huffman", &boxed_gemv_bf16_huffman);
     m.impl("huffman_encode", &boxed_huffman_encode);
@@ -816,7 +907,7 @@ STABLE_TORCH_LIBRARY_IMPL(bf16_huffman_infer, CUDA, m) {
 
     m.impl("gemv_bf16_ans", &boxed_gemv_bf16_ans);
     m.impl("ans_encode", &boxed_ans_encode);
-    // m.impl("ans_decode", &boxed_ans_decode);
+    m.impl("ans_decode", &boxed_ans_decode);
 }
 
 }

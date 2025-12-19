@@ -97,14 +97,13 @@ class HuffmanWeight(nn.Module):
     
     def get_weight(self) -> Tensor:
         weight = torch.empty_like(self.rem, dtype=torch.bfloat16)
+        weight = weight.view(weight.size(1), -1)
         assert weight.device == self.rem.device
         assert weight.device.type == 'cuda'
         huffman_decode(
             self.rem, self.exp, weight,
             self.offsets, self.LUT1, self.LUT2, self.LUT3, self.LUT4, self.code_lengths
         )
-        weight.transpose_(0, 1)
-        weight = weight.flatten(1, 2)
         return weight
     
     @classmethod
@@ -266,14 +265,13 @@ class ANSWeight(HuffmanWeight):
     
     def get_weight(self) -> Tensor:
         weight = torch.empty_like(self.rem, dtype=torch.bfloat16)
+        weight = weight.view(weight.size(1), -1)
         assert weight.device == self.rem.device
         assert weight.device.type == 'cuda'
         ans_decode(
             self.rem, self.exp, weight,
             self.offsets, self.LUT
         )
-        weight.transpose_(0, 1)
-        weight = weight.flatten(1, 2)
         return weight
     
     @classmethod

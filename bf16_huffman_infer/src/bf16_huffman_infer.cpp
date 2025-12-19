@@ -32,7 +32,7 @@ STABLE_TORCH_LIBRARY(bf16_huffman_infer, m) {
     
     m.def("gemv_bf16_ans(Tensor A_rem, Tensor A_exp, Tensor X, Tensor(a!) Y, Tensor offsets, Tensor LUT) -> ()");
     m.def("ans_encode(Tensor data, Tensor freq, Tensor cum, Tensor(a!) output, Tensor(b!) output_lengths) -> ()");
-    // m.def("ans_decode(Tensor A_rem, Tensor A_exp, Tensor(a!) Y, Tensor offsets, Tensor LUT) -> ()");
+    m.def("ans_decode(Tensor A_rem, Tensor A_exp, Tensor(a!) Y, Tensor offsets, Tensor LUT) -> ()");
 }
 
 }
