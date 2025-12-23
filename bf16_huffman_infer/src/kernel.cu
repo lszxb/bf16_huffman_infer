@@ -103,6 +103,9 @@ gemv_bf16_general_kernel(
 
     __syncwarp();
 
+    dec0.init(pae0, warpSize * 2, decoder_LUT);
+    dec1.init(pae1, warpSize * 2, decoder_LUT);
+
     for (int count = 0, n_iter = N / (4 * warpSize); count < n_iter; count += 1) {
         #pragma unroll
         for (int i = 0; i < batch_size; i++) {
@@ -265,6 +268,9 @@ decode_general_kernel(
 
     __syncwarp();
 
+    dec0.init(pae0, warpSize * 2, decoder_LUT);
+    dec1.init(pae1, warpSize * 2, decoder_LUT);
+
     for (int count = 0, n_iter = N / (4 * warpSize); count < n_iter; count += 1) {
         const uchar4 *npar = par;
         #pragma unroll
@@ -371,6 +377,12 @@ struct huffman_decoder{
         remaining_bits -= bitoffset;
 
         return symbol;
+    }
+
+    __device__ __inline__ void init(
+        const uint32_t* &pae, int warp_group_size, const huffman_LUT *lut
+    ) {
+        return;
     }
 };
 
@@ -638,16 +650,11 @@ struct ans_LUT {
 
 
 struct ans_decoder{
-    uint64_t state = 0xffffffffffffffff;
+    uint64_t state;
 
     __device__ __inline__ uint8_t decode_symbol2(
         const uint32_t* &pae, int warp_group_size, const ans_LUT *lut
     ) {
-        if (state == 0xffffffffffffffff) {
-            state = (*pae);
-            pae += warp_group_size;
-        }
-
         // __syncwarp();
 
         if (state < (1 << ANS_PRECISION)) {
@@ -664,6 +671,14 @@ struct ans_decoder{
         state = res.freq * (state >> ANS_PRECISION) + res.rem;
 
         return res.sym;
+    }
+
+    __device__ __inline__ void init(
+        const uint32_t* &pae, int warp_group_size, const ans_LUT *lut
+    ) {
+        state = (*pae);
+        pae += warp_group_size;
+        return;
     }
 };
 
