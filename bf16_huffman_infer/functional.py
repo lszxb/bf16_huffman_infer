@@ -13,6 +13,7 @@ from .utils import get_block_size_n, split_bf16
 from .ops import ans_decode, ans_encode, gemv_bf16_ans, gemv_bf16_huffman, huffman_decode, huffman_encode
 
 OP_PER_LANE = 1
+ANS_PRECISION = 8
 
 __all__ = [
     "linear_huffman",
@@ -279,7 +280,7 @@ class ANSWeight(HuffmanWeight):
         device = torch.device('cuda', 0)
         _, exp = split_bf16(a.to(device))
         bincount = torch.bincount(exp.flatten(), minlength=256).to(torch.int64)
-        codec = RANSEncoder(bincount.tolist(), precision=10)
+        codec = RANSEncoder(bincount.tolist(), precision=ANS_PRECISION)
         return codec
     
     @classmethod

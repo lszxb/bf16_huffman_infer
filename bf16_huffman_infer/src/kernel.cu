@@ -22,7 +22,7 @@
 #define OP_PER_LANE 1
 #define MAX_WARP_BLOCK_RATIO 4
 #define MAX_SPLIT_K 32
-#define ANS_PRECISION 10
+#define ANS_PRECISION 8
 
 namespace bf16_huffman_infer {
 
