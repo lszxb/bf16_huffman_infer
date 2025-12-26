@@ -795,13 +795,11 @@ __global__ void ans_encode_kernel(
         state = (quotient << ANS_PRECISION) + remainder + start;
     }
 
-    output[thread_id * data_length * 8 + output_count] = (uint32_t)state;
-    output_count++;
-    state >>= 32;
-
-    output[thread_id * data_length * 8 + output_count] = (uint32_t)state;
-    output_count++;
-    state >>= 32;
+    while (state > 0) {
+        output[thread_id * data_length * 8 + output_count] = (uint32_t)state;
+        output_count++;
+        state >>= 32;
+    }
 
     for (int i = 0; i < output_count / 2; i++) {
         auto tmp = output[thread_id * data_length * 8 + i];
