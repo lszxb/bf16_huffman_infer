@@ -37,7 +37,7 @@ pip install --no-build-isolation -e .
 
 For Windows users with CUDA 12, a prebuilt wheel for PyTorch 2.9+ is provided in the Github Releases.
 ```bash
-pip install https://github.com/lszxb/bf16_huffman_infer/releases/download/v0.0.3/bf16_huffman_infer-0.0.3-cp39-abi3-win_amd64.whl
+pip install https://github.com/lszxb/bf16_huffman_infer/releases/download/v0.0.3.post1/bf16_huffman_infer-0.0.3.post1-cp39-abi3-win_amd64.whl
 ```
 
 
