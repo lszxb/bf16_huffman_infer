@@ -2,8 +2,13 @@
 
 This is a experimental implementation of fused Decompression-GEMV kernel, using the LUT-based Huffman compression purposed by [DFloat11](https://github.com/LeanModels/DFloat11), to compress the exponential bits of the BF16 format. It provides reduced memory usage of the LLMs, while maintaining comparable decoding speed to the regular BF16 format.
 
-The current fused kernel implementation only support `batch_size<=8`, otherwise it will fallback to the non-fused decompression then GEMM implementation. Due to the optimized data layout, it can achieve about 80%~90% decoding speed of the original model, while reducing the VRAM usage by ~25%. The compression ratio is slightly higher than the original DFloat11, but the decoding speed is much faster. On some bandwidth-limited GPUs, like RTX-4060ti, it can even achieve better decoding speed than the original BF16 model.
+The current fused kernel implementation only support `batch_size<=8`, otherwise it will fallback to the non-fused decompression then GEMM implementation. Due to the optimized data layout, it can achieve about 80%~90% decoding speed of the original model, while reducing the VRAM usage by ~25%. The compression ratio is slightly higher than the original DFloat11, but the decoding speed is much faster. On some bandwidth-limited GPUs, like RTX 4060Ti, it can even achieve better decoding speed than the original BF16 model.
 
+## Change Log
+
+### v0.0.3
+- Added support for rANS compression (`algo='ans'`), which can achieve more stable compression ratio, but may slightly slower than the LUT-based Huffman compression.
+- Now using the PyTorch stable ABI, so the prebuilt wheel can support all PyTorch version after 2.9.
 
 ## Benchmark Results
 
@@ -30,15 +35,10 @@ cd bf16_huffman_infer
 pip install --no-build-isolation -e .
 ```
 
-For Windows users, a prebuilt wheel for PyTorch 2.8 is provided in the Github Releases.
-```bash
-pip install https://github.com/lszxb/bf16_huffman_infer/releases/download/v0.0.2/bf16_huffman_infer-0.0.2+torch2.8-cp39-abi3-win_amd64.whl
-```
-
 
 ## Requirements
 - Python 3.9+
-- PyTorch 2.7+
+- PyTorch 2.9+
 - Nvidia Turing or newer GPU
 
 
@@ -57,7 +57,11 @@ inputs = tok('"Hello, world!" is', return_tensors='pt')
 
 # a single line to compress the model
 # will use cuda:0 for computation, can be done in a few minutes
-convert_all_linear(model.model, min_out_features=0)
+convert_all_linear(model.model, min_out_features=0, algo='huffman')
+# algo choices:
+# algo='huffman', the LUT-based Huffman compression, default
+# algo='ans', the rANS compression, slightly slower but have more stable compression ratio, add in 0.0.3
+# algo='smallest', use the smaller one between 'huffman' and 'ans' for each linear layer, add in 0.0.3
 model.cuda()
 
 # graphed_model = model
