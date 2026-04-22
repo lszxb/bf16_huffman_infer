@@ -387,14 +387,14 @@ struct huffman_decoder{
 };
 
 
+template <int width> struct width_to_vector_type {};
+template <> struct width_to_vector_type<1> { using type = uint1; };
+template <> struct width_to_vector_type<2> { using type = uint2; };
+template <> struct width_to_vector_type<4> { using type = uint4; };
+
+
 template <typename T, int width>
 union vec {
-    template <int width> struct width_to_vector_type {};
-    template <> struct width_to_vector_type<1> { using type = uint1; };
-    template <> struct width_to_vector_type<2> { using type = uint2; };
-    template <> struct width_to_vector_type<4> { using type = uint4; };
-
-
     using vector_type = typename width_to_vector_type<width>::type;
     vector_type data;
     T value[width];
